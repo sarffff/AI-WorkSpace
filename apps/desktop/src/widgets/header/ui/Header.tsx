@@ -1,9 +1,10 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useSelector, useDispatch } from 'react-redux'
 import { RootState } from '@/app/providers/store'
 import { setSelectedModel, setServerStatus } from '@/entities/chat/model/chatSlice'
+import { logout } from '@/entities/auth/model/authSlice'
 import { HttpClient } from '@ai-workspace/sdk'
-import { ChevronDown, ShieldCheck } from 'lucide-react'
+import { ChevronDown, ShieldCheck, LogOut, User } from 'lucide-react'
 
 const api = new HttpClient('http://localhost:3000')
 
@@ -12,6 +13,8 @@ export const Header: React.FC = () => {
   const { selectedModel, activeTab, serverStatus, sessions } = useSelector(
     (state: RootState) => state.chat,
   )
+  const user = useSelector((state: RootState) => state.auth.user)
+  const [showMenu, setShowMenu] = useState(false)
   const [appVersion] = React.useState<string>('0.1.0')
 
   useEffect(() => {
@@ -52,6 +55,7 @@ export const Header: React.FC = () => {
       </div>
 
       <div className="flex items-center gap-4">
+        {/* 模型选择器 */}
         <div className="relative group">
           <select
             value={selectedModel}
@@ -67,11 +71,49 @@ export const Header: React.FC = () => {
           <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
         </div>
 
+        {/* 服务器状态 */}
         <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-slate-950/40 border border-slate-800/60 text-[11px] text-slate-300">
           <ShieldCheck className={`w-3.5 h-3.5 ${statusColor}`} />
           <span>
             Server: <strong className={`${statusColor} font-medium`}>{statusLabel}</strong>
           </span>
+        </div>
+
+        {/* 用户信息 + 下拉菜单 */}
+        <div className="relative">
+          <button
+            onClick={() => setShowMenu(!showMenu)}
+            className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-slate-800/60 transition-colors"
+          >
+            <div className="w-6 h-6 rounded-full bg-gradient-to-tr from-indigo-500 to-violet-500 flex items-center justify-center text-white">
+              <User className="w-3 h-3" />
+            </div>
+            <span className="text-xs text-slate-200 max-w-[80px] truncate">
+              {user?.name || 'User'}
+            </span>
+          </button>
+
+          {showMenu && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={() => setShowMenu(false)} />
+              <div className="absolute right-0 top-full mt-1 z-20 w-44 bg-slate-900 border border-slate-800 rounded-xl shadow-xl py-1">
+                <div className="px-3 py-2 border-b border-slate-800">
+                  <p className="text-xs text-slate-200 font-medium truncate">{user?.name}</p>
+                  <p className="text-[10px] text-slate-400 truncate">{user?.email}</p>
+                </div>
+                <button
+                  onClick={() => {
+                    dispatch(logout())
+                    setShowMenu(false)
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-xs text-red-400 hover:bg-red-600/10 transition-colors"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  退出登录
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </header>

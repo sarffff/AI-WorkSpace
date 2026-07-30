@@ -7,9 +7,13 @@ import { ChatPage } from '@/pages/chat/ui/ChatPage'
 import { KnowledgePage } from '@/pages/knowledge/ui/KnowledgePage'
 import { PromptsPage } from '@/pages/prompts/ui/PromptsPage'
 import { SettingsPage } from '@/pages/settings/ui/SettingsPage'
+import AuthPage from '@/pages/auth/ui/AuthPage'
 
 export function App() {
+  const user = useSelector((state: RootState) => state.auth.user)
   const activeTab = useSelector((state: RootState) => state.chat.activeTab)
+
+  if (!user) return <AuthPage />
 
   const renderContent = () => {
     switch (activeTab) {
@@ -28,10 +32,7 @@ export function App() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#090d16] font-sans">
-      {/* 侧边栏组件 */}
       <Sidebar />
-
-      {/* 主内容区域 */}
       <div className="flex-1 flex flex-col h-full min-w-0">
         <Header />
         <main className="flex-1 overflow-hidden">{renderContent()}</main>
