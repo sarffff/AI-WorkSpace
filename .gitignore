@@ -1,0 +1,75 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+release/
+*.tsbuildinfo
+
+# Turborepo cache
+.turbo/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor directories and files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Testing
+coverage/
+.nyc_output/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Prisma
+apps/server/prisma/*.db
+apps/server/prisma/migrations/
+
+# Redis
+dump.rdb
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Electron
+apps/desktop/dist-electron/
+apps/desktop/release/
+
+# Misc
+.husky/_

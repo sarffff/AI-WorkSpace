@@ -1,0 +1,9 @@
+{
+  "name": "@ai-workspace/config",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./index.js",
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}
