@@ -90,24 +90,43 @@ export class ChatService {
     })
   }
 
-  // 非流式：保存消息 → 调 AI → 保存回复 → 返回
-  async generateAiResponse(chatId: string, prompt: string, model = 'gpt-6') {
+  // 获取对话上下文（最近 N 条消息，用于多轮对话）
+  private async getChatContext(
+    chatId: string,
+    maxMessages = 20,
+  ): Promise<OpenAI.Chat.ChatCompletionMessageParam[]> {
+    const messages = await this.prisma.message.findMany({
+      where: { chatId },
+      orderBy: { createdAt: 'desc' },
+      take: maxMessages,
+    })
+    // 反转为时间正序，并转换为 OpenAI 格式
+    return messages.reverse().map((m) => ({
+      role: m.role as 'user' | 'assistant' | 'system',
+      content: m.content,
+    }))
+  }
+
+  // 非流式：保存消息 → 调 AI（带上下文） → 保存回复 → 返回
+  async generateAiResponse(chatId: string, prompt: string, model?: string) {
     await this.saveUserMessage(chatId, prompt)
+    const context = await this.getChatContext(chatId)
     const completion = await this.openai.chat.completions.create({
       model: model || this.configService.get<string>('LLM_MODEL') || 'GLM-4-Flash',
-      messages: [{ role: 'user', content: prompt }],
+      messages: context,
     })
     const reply = completion.choices[0]?.message?.content || ''
     await this.saveAiMessage(chatId, reply, model)
     return reply
   }
 
-  // 流式：保存用户消息 → 流式调 AI → 逐 token 返回 → 结束后保存完整回复
+  // 流式：保存用户消息 → 流式调 AI（带上下文） → 逐 token 返回 → 结束后保存完整回复
   async *streamAiResponse(chatId: string, prompt: string, model?: string): AsyncGenerator<string> {
     await this.saveUserMessage(chatId, prompt)
+    const context = await this.getChatContext(chatId)
     const stream = await this.openai.chat.completions.create({
       model: model || this.configService.get<string>('LLM_MODEL') || 'GLM-4-Flash',
-      messages: [{ role: 'user', content: prompt }],
+      messages: context,
       stream: true,
     })
     let fullReply = ''
