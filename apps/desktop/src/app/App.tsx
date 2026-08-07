@@ -1,6 +1,8 @@
-import React from 'react'
-import { useSelector } from 'react-redux'
+import React, { useEffect } from 'react'
+import { useSelector, useDispatch } from 'react-redux'
 import { RootState } from './providers/store'
+import { logout } from '@/entities/auth/model/authSlice'
+import { AUTH_UNAUTHORIZED_EVENT } from '@ai-workspace/sdk'
 import { Sidebar } from '@/widgets/sidebar/ui/Sidebar'
 import { Header } from '@/widgets/header/ui/Header'
 import { ChatPage } from '@/pages/chat/ui/ChatPage'
@@ -10,8 +12,16 @@ import { SettingsPage } from '@/pages/settings/ui/SettingsPage'
 import AuthPage from '@/pages/auth/ui/AuthPage'
 
 export function App() {
+  const dispatch = useDispatch()
   const user = useSelector((state: RootState) => state.auth.user)
   const activeTab = useSelector((state: RootState) => state.chat.activeTab)
+
+  // token 失效（任意接口返回 401）时同步清空 Redux 登录态，回到登录页
+  useEffect(() => {
+    const onUnauthorized = () => dispatch(logout())
+    window.addEventListener(AUTH_UNAUTHORIZED_EVENT, onUnauthorized)
+    return () => window.removeEventListener(AUTH_UNAUTHORIZED_EVENT, onUnauthorized)
+  }, [dispatch])
 
   if (!user) return <AuthPage />
 
