@@ -1,11 +1,22 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, Res, Header } from '@nestjs/common'
+import {
+  Controller,
+  Get,
+  Post,
+  Patch,
+  Delete,
+  Body,
+  Param,
+  Res,
+  Header,
+  UseGuards,
+} from '@nestjs/common'
 import { Response } from 'express'
 import { ChatService } from './chat.service'
-
-// 临时默认用户 ID（后续接入鉴权后替换）
-const DEFAULT_USER_ID = '00000000-0000-0000-0000-000000000001'
+import { JwtAuthGuard } from '../auth/jwt-auth.guard'
+import { UserId } from '../auth/user-id.decorator'
 
 @Controller('chats')
+@UseGuards(JwtAuthGuard)
 export class ChatController {
   constructor(private readonly chatService: ChatService) {}
 
@@ -13,47 +24,56 @@ export class ChatController {
 
   // 获取最近对话列表
   @Get()
-  async getChats() {
-    return this.chatService.getRecentChats(DEFAULT_USER_ID)
+  async getChats(@UserId() userId: string) {
+    return this.chatService.getRecentChats(userId)
   }
 
   // 创建新会话
   @Post()
-  async createChat(@Body() body: { title?: string }) {
-    return this.chatService.createChat(DEFAULT_USER_ID, body.title)
+  async createChat(@UserId() userId: string, @Body() body: { title?: string }) {
+    return this.chatService.createChat(userId, body.title)
   }
 
-  // 重命名会话
+  // 重命名会话（仅限本人会话）
   @Patch(':id')
-  async renameChat(@Param('id') id: string, @Body() body: { title: string }) {
-    return this.chatService.renameChat(id, body.title)
+  async renameChat(
+    @UserId() userId: string,
+    @Param('id') id: string,
+    @Body() body: { title: string },
+  ) {
+    return this.chatService.renameChat(userId, id, body.title)
   }
 
-  // 切换固定状态
+  // 切换固定状态（仅限本人会话）
   @Patch(':id/pin')
-  async togglePinChat(@Param('id') id: string) {
-    return this.chatService.togglePinChat(id)
+  async togglePinChat(@UserId() userId: string, @Param('id') id: string) {
+    return this.chatService.togglePinChat(userId, id)
   }
 
-  // 删除会话
+  // 删除会话（仅限本人会话）
   @Delete(':id')
-  async deleteChat(@Param('id') id: string) {
-    await this.chatService.deleteChat(id)
+  async deleteChat(@UserId() userId: string, @Param('id') id: string) {
+    await this.chatService.deleteChat(userId, id)
     return { success: true }
   }
 
-  // 获取会话消息列表
+  // 获取会话消息列表（仅限本人会话）
   @Get(':id/messages')
-  async getMessages(@Param('id') id: string) {
-    return this.chatService.getMessages(id)
+  async getMessages(@UserId() userId: string, @Param('id') id: string) {
+    return this.chatService.getMessages(userId, id)
   }
 
   // ===== AI 对话 =====
 
   // 非流式对话（一次返回完整响应）
   @Post(':id/completions')
-  async completions(@Param('id') id: string, @Body() body: { prompt: string; model?: string }) {
-    const data = await this.chatService.generateAiResponse(id, body.prompt, body.model)
+  async completions(
+    @UserId() userId: string,
+    @Param('id') id: string,
+    @Body() body: { prompt: string; model?: string; useRag?: boolean },
+  ) {
+    await this.chatService.assertOwned(userId, id)
+    const data = await this.chatService.generateAiResponse(id, body.prompt, body.model, body.useRag)
     return { success: true, data }
   }
 
@@ -61,8 +81,9 @@ export class ChatController {
   @Post(':id/completions/stream')
   @Header('Cache-Control', 'no-cache')
   async streamCompletions(
+    @UserId() userId: string,
     @Param('id') id: string,
-    @Body() body: { prompt: string; model?: string },
+    @Body() body: { prompt: string; model?: string; useRag?: boolean },
     @Res() res: Response,
   ) {
     res.setHeader('Content-Type', 'text/event-stream')
@@ -70,7 +91,13 @@ export class ChatController {
     res.setHeader('X-Accel-Buffering', 'no')
 
     try {
-      for await (const chunk of this.chatService.streamAiResponse(id, body.prompt, body.model)) {
+      await this.chatService.assertOwned(userId, id)
+      for await (const chunk of this.chatService.streamAiResponse(
+        id,
+        body.prompt,
+        body.model,
+        body.useRag,
+      )) {
         res.write(`data: ${JSON.stringify({ content: chunk })}\n\n`)
       }
       res.write(`data: ${JSON.stringify({ done: true })}\n\n`)

@@ -29,6 +29,7 @@ export interface KnowledgeDocument {
 export interface CompletionRequest {
   prompt: string
   model?: string
+  useRag?: boolean
 }
 
 // ===== 完成响应管理 =====

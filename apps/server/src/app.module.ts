@@ -11,6 +11,7 @@ import { AuthModule } from './modules/auth/auth.module'
     ConfigModule.forRoot({ isGlobal: true }),
     PrismaModule,
     RedisModule,
+    AuthModule,
     ChatModule,
     KnowledgeModule,
     AuthModule,
