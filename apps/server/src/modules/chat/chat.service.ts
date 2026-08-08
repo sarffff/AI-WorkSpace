@@ -1,19 +1,22 @@
-import { Injectable, NotFoundException } from '@nestjs/common'
+import { Injectable, NotFoundException, Logger } from '@nestjs/common'
 import { PrismaService } from '@/prisma/prisma.service'
 import OpenAI from 'openai'
 import { ConfigService } from '@nestjs/config'
+import { KnowledgeService, RagHit } from '@/modules/knowledge/knowledge.service'
 
 @Injectable()
 export class ChatService {
   private openai: OpenAI
+  private readonly logger = new Logger(ChatService.name)
 
   constructor(
     private prisma: PrismaService,
     private configService: ConfigService,
+    private knowledgeService: KnowledgeService,
   ) {
     this.openai = new OpenAI({
       baseURL:
-        this.configService.get<string>('LLM_BASE_URL') || 'https://open.bigmodel.cn/api/paas/v4/',
+        this.configService.get<string>('LLM_API_URL') || 'https://open.bigmodel.cn/api/paas/v4/',
       apiKey: this.configService.get<string>('LLM_API_KEY'),
     })
   }
@@ -43,90 +46,120 @@ export class ChatService {
     })
   }
 
-  // 重命名会话
-  async renameChat(chatId: string, title: string) {
-    const chat = await this.prisma.chat.findUnique({ where: { id: chatId } })
-    if (!chat) throw new NotFoundException('会话不存在')
+  // 重命名会话（仅限本人）
+  async renameChat(userId: string, chatId: string, title: string) {
+    await this.assertOwned(userId, chatId)
     return this.prisma.chat.update({ where: { id: chatId }, data: { title } })
   }
 
-  // 切换固定状态
-  async togglePinChat(chatId: string) {
-    const chat = await this.prisma.chat.findUnique({ where: { id: chatId } })
-    if (!chat) throw new NotFoundException('会话不存在')
+  // 切换固定状态（仅限本人）
+  async togglePinChat(userId: string, chatId: string) {
+    const chat = await this.assertOwned(userId, chatId)
     return this.prisma.chat.update({ where: { id: chatId }, data: { pinned: !chat.pinned } })
   }
 
-  // 删除会话
-  async deleteChat(chatId: string) {
-    const chat = await this.prisma.chat.findUnique({ where: { id: chatId } })
-    if (!chat) throw new NotFoundException('会话不存在')
+  // 删除会话（仅限本人）
+  async deleteChat(userId: string, chatId: string) {
+    await this.assertOwned(userId, chatId)
     await this.prisma.chat.delete({ where: { id: chatId } })
   }
 
-  // 获取会话消息列表
-  async getMessages(chatId: string) {
-    const chat = await this.prisma.chat.findUnique({ where: { id: chatId } })
-    if (!chat) throw new NotFoundException('会话不存在')
+  // 获取会话消息列表（仅限本人）
+  async getMessages(userId: string, chatId: string) {
+    await this.assertOwned(userId, chatId)
     return this.prisma.message.findMany({
       where: { chatId },
       orderBy: { createdAt: 'asc' },
     })
   }
 
+  // 校验会话归属，返回会话（非本人会话一律 404，避免越权枚举）
+  async assertOwned(userId: string, chatId: string) {
+    const chat = await this.prisma.chat.findUnique({ where: { id: chatId } })
+    if (!chat || chat.userId !== userId) throw new NotFoundException('会话不存在')
+    return chat
+  }
+
   // ===== AI 对话 =====
 
-  // 保存用户消息
+  // 模型名：请求指定 > 环境配置 > 默认
+  private resolveModel(model?: string): string {
+    return model || this.configService.get<string>('LLM_API_MODEL') || 'glm-4.5-air'
+  }
+
+  // RAG：检索知识库 → 拼装 system context（无命中则返回空数组）
+  private async buildRagContext(prompt: string): Promise<{
+    hits: RagHit[]
+    messages: OpenAI.Chat.ChatCompletionMessageParam[]
+  }> {
+    const hits = await this.knowledgeService.searchRelevant(prompt, 4)
+    if (hits.length === 0) return { hits, messages: [] }
+
+    const context = hits.map((h, i) => `[片段 ${i + 1}]\n${h.content}`).join('\n\n')
+    this.logger.log(`RAG: ${hits.length} hits, scores=${hits.map((h) => h.score).join(',')}`)
+
+    return {
+      hits,
+      messages: [
+        {
+          role: 'system',
+          content: `你是 AI Workspace 的智能助手。请优先依据下面提供的「知识库上下文」回答用户问题，若其中没有相关信息，再结合自身知识作答，并如实说明。
+
+—— 知识库上下文 ——
+${context}`,
+        },
+      ],
+    }
+  }
+
+  // 保存用户消息（顺带刷新会话时间，保持列表排序正确）
   async saveUserMessage(chatId: string, content: string) {
-    return this.prisma.message.create({
+    const message = await this.prisma.message.create({
       data: { chatId, role: 'user', content },
     })
+    await this.touchChat(chatId)
+    return message
   }
 
-  // 保存 AI 回复
+  // 保存 AI 回复（顺带刷新会话时间）
   async saveAiMessage(chatId: string, content: string, model?: string) {
-    return this.prisma.message.create({
+    const message = await this.prisma.message.create({
       data: { chatId, role: 'assistant', content, model },
     })
+    await this.touchChat(chatId)
+    return message
   }
 
-  // 获取对话上下文（最近 N 条消息，用于多轮对话）
-  private async getChatContext(
-    chatId: string,
-    maxMessages = 20,
-  ): Promise<OpenAI.Chat.ChatCompletionMessageParam[]> {
-    const messages = await this.prisma.message.findMany({
-      where: { chatId },
-      orderBy: { createdAt: 'desc' },
-      take: maxMessages,
-    })
-    // 反转为时间正序，并转换为 OpenAI 格式
-    return messages.reverse().map((m) => ({
-      role: m.role as 'user' | 'assistant' | 'system',
-      content: m.content,
-    }))
+  // 手动刷新会话 updatedAt（@updatedAt 只在直接 update Chat 时生效）
+  private async touchChat(chatId: string) {
+    await this.prisma.chat.update({ where: { id: chatId }, data: { updatedAt: new Date() } })
   }
 
-  // 非流式：保存消息 → 调 AI（带上下文） → 保存回复 → 返回
-  async generateAiResponse(chatId: string, prompt: string, model?: string) {
+  // 非流式：保存消息 → RAG 检索 → 调 AI → 保存回复 → 返回
+  async generateAiResponse(chatId: string, prompt: string, model?: string, useRag = true) {
     await this.saveUserMessage(chatId, prompt)
-    const context = await this.getChatContext(chatId)
+    const rag = useRag ? await this.buildRagContext(prompt) : { hits: [], messages: [] }
     const completion = await this.openai.chat.completions.create({
-      model: model || this.configService.get<string>('LLM_MODEL') || 'GLM-4-Flash',
-      messages: context,
+      model: this.resolveModel(model),
+      messages: [...rag.messages, { role: 'user', content: prompt }],
     })
     const reply = completion.choices[0]?.message?.content || ''
     await this.saveAiMessage(chatId, reply, model)
     return reply
   }
 
-  // 流式：保存用户消息 → 流式调 AI（带上下文） → 逐 token 返回 → 结束后保存完整回复
-  async *streamAiResponse(chatId: string, prompt: string, model?: string): AsyncGenerator<string> {
+  // 流式：保存消息 → RAG 检索 → 流式调 AI → 逐 token 返回 → 结束后保存完整回复
+  async *streamAiResponse(
+    chatId: string,
+    prompt: string,
+    model?: string,
+    useRag = true,
+  ): AsyncGenerator<string> {
     await this.saveUserMessage(chatId, prompt)
-    const context = await this.getChatContext(chatId)
+    const rag = useRag ? await this.buildRagContext(prompt) : { hits: [], messages: [] }
     const stream = await this.openai.chat.completions.create({
-      model: model || this.configService.get<string>('LLM_MODEL') || 'GLM-4-Flash',
-      messages: context,
+      model: this.resolveModel(model),
+      messages: [...rag.messages, { role: 'user', content: prompt }],
       stream: true,
     })
     let fullReply = ''

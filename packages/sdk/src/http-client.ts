@@ -2,6 +2,19 @@ import type { CompletionRequest, CompletionResponse, KnowledgeDocument } from '@
 
 export type StreamChunk = { content?: string; done?: boolean; error?: string }
 
+// 401 → 通知全局登出（Redux 侧通过监听该事件清空登录态）
+export const AUTH_UNAUTHORIZED_EVENT = 'auth:unauthorized'
+
+function handleUnauthorized() {
+  localStorage.removeItem('auth_user')
+  localStorage.removeItem('auth_token')
+  try {
+    window.dispatchEvent(new CustomEvent(AUTH_UNAUTHORIZED_EVENT))
+  } catch {
+    // ignore（非浏览器环境）
+  }
+}
+
 export interface ServerChatSession {
   id: string
   title: string
@@ -22,13 +35,22 @@ export interface ServerMessage {
 export class HttpClient {
   constructor(private baseUrl: string) {}
 
+  // 附加 Bearer token 的请求头
+  private authHeaders(extra?: Record<string, string>): Record<string, string> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', ...extra }
+    const token = localStorage.getItem('auth_token')
+    if (token) headers['Authorization'] = `Bearer ${token}`
+    return headers
+  }
+
   // 通用 JSON 请求
   private async request<T>(path: string, options?: RequestInit): Promise<T> {
     const res = await fetch(`${this.baseUrl}${path}`, {
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.authHeaders(),
       ...options,
     })
     if (!res.ok) {
+      if (res.status === 401) handleUnauthorized()
       throw new Error(`HTTP ${res.status}: ${res.statusText}`)
     }
     return res.json()
@@ -89,6 +111,27 @@ export class HttpClient {
     return this.request<KnowledgeDocument[]>('/knowledge/documents')
   }
 
+  // 上传文档到知识库（自动切块 + 向量化）
+  async uploadDocument(file: File | Blob, filename: string): Promise<KnowledgeDocument> {
+    const form = new FormData()
+    form.append('file', file, filename)
+    const res = await fetch(`${this.baseUrl}/knowledge/documents`, {
+      method: 'POST',
+      headers: { Authorization: this.authHeaders()['Authorization'] || '' },
+      body: form,
+    })
+    if (!res.ok) {
+      if (res.status === 401) handleUnauthorized()
+      throw new Error(`HTTP ${res.status}: ${res.statusText}`)
+    }
+    return res.json()
+  }
+
+  // 删除知识库文档（级联删除向量块）
+  async deleteDocument(id: string): Promise<void> {
+    await this.request<unknown>(`/knowledge/documents/${id}`, { method: 'DELETE' })
+  }
+
   // 探测后端是否在线
   async ping(): Promise<boolean> {
     try {
@@ -107,12 +150,13 @@ export class HttpClient {
   ): AsyncGenerator<StreamChunk> {
     const res = await fetch(`${this.baseUrl}/chats/${chatId}/completions/stream`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.authHeaders(),
       body: JSON.stringify(req),
       signal,
     })
 
     if (!res.ok) {
+      if (res.status === 401) handleUnauthorized()
       throw new Error(`HTTP ${res.status}: ${res.statusText}`)
     }
 

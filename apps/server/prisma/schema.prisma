@@ -40,10 +40,23 @@ model Message {
 }
 
 model Document {
-  id        String   @id @default(uuid())
+  id        String          @id @default(uuid())
   name      String
   size      Int
-  chunks    Int      @default(0)
-  status    String   @default("indexed") // indexed, processing, failed
-  createdAt DateTime @default(now())
+  chunks    Int             @default(0)
+  status    String          @default("indexed") // indexed, processing, failed
+  createdAt DateTime        @default(now())
+  chunkList KnowledgeChunk[]
+}
+
+model KnowledgeChunk {
+  id         String   @id @default(uuid())
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  index      Int
+  content    String   @db.Text
+  embedding  Json
+  createdAt  DateTime @default(now())
+
+  @@index([documentId])
 }
