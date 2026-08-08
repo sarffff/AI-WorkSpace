@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { HttpClient } from '@ai-workspace/sdk'
 import type { KnowledgeDocument } from '@ai-workspace/sdk'
 import {
@@ -13,9 +13,39 @@ import {
   FileCode,
   File,
   Hexagon,
+  Trash2,
+  Loader2,
 } from 'lucide-react'
 
 const api = new HttpClient('http://localhost:3000')
+
+const SUPPORTED_EXTS = [
+  'pdf',
+  'docx',
+  'txt',
+  'md',
+  'markdown',
+  'json',
+  'csv',
+  'ts',
+  'js',
+  'jsx',
+  'tsx',
+  'py',
+  'java',
+  'go',
+  'html',
+  'css',
+  'yml',
+  'yaml',
+  'xml',
+  'log',
+  'sql',
+  'sh',
+  'bat',
+  'ini',
+  'toml',
+]
 
 function formatSize(bytes: number): string {
   if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`
@@ -45,8 +75,11 @@ export const KnowledgePage: React.FC = () => {
   const [totalChunks, setTotalChunks] = useState(0)
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState('')
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
-  useEffect(() => {
+  const loadDocuments = () => {
     api
       .getDocuments()
       .then((docs) => {
@@ -56,7 +89,44 @@ export const KnowledgePage: React.FC = () => {
       })
       .catch(() => {})
       .finally(() => setLoading(false))
+  }
+
+  useEffect(() => {
+    loadDocuments()
   }, [])
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    const ext = file.name.split('.').pop()?.toLowerCase() || ''
+    if (!SUPPORTED_EXTS.includes(ext)) {
+      setUploadError(`不支持的文件类型 .${ext}（支持: ${SUPPORTED_EXTS.slice(0, 8).join(', ')}…）`)
+      return
+    }
+    setUploading(true)
+    setUploadError('')
+    try {
+      await api.uploadDocument(file, file.name)
+      loadDocuments()
+    } catch (err) {
+      setUploadError((err as Error).message)
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm('确定删除该文档及其向量索引？')) return
+    try {
+      await api.deleteDocument(id)
+      setDocuments((docs) => docs.filter((d) => d.id !== id))
+      setTotalChunks((n) => n - (documents.find((d) => d.id === id)?.chunks || 0))
+      setTotalDocs((n) => n - 1)
+    } catch {
+      // ignore
+    }
+  }
 
   const filteredDocs = searchQuery
     ? documents.filter((d) => d.name.toLowerCase().includes(searchQuery.toLowerCase()))
@@ -102,11 +172,26 @@ export const KnowledgePage: React.FC = () => {
             管理文档向量，为智能体提供自定义上下文
           </p>
         </div>
-        <button className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white text-xs font-semibold flex items-center gap-2 shadow-md shadow-amber-900/25 transition-all">
-          <Upload className="w-4 h-4" />
-          上传文档
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploading}
+          className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 disabled:opacity-60 text-white text-xs font-semibold flex items-center gap-2 shadow-md shadow-amber-900/25 transition-all"
+        >
+          {uploading ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <Upload className="w-4 h-4" />
+          )}
+          {uploading ? '索引中…' : '上传文档'}
         </button>
+        <input ref={fileInputRef} type="file" className="hidden" onChange={handleUpload} />
       </div>
+
+      {uploadError && (
+        <div className="px-4 py-2.5 rounded-xl bg-red-500/10 border border-red-500/25 text-[11px] text-red-400">
+          {uploadError}
+        </div>
+      )}
 
       {/* ===== 统计卡片 ===== */}
       <div className="grid grid-cols-3 gap-4">
@@ -197,12 +282,24 @@ export const KnowledgePage: React.FC = () => {
                   </div>
                 </div>
                 <div className="flex items-center gap-4 shrink-0">
-                  <span className="text-[11px] text-[var(--text-muted)] hidden sm:block">
-                    {doc.chunks} chunks
-                  </span>
-                  <span className="text-[11px] px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 font-medium capitalize border border-emerald-500/20">
+                  <span
+                    className={`text-[11px] px-2.5 py-1 rounded-full capitalize border font-medium ${
+                      doc.status === 'indexed'
+                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                        : doc.status === 'processing'
+                          ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                          : 'bg-red-500/10 text-red-400 border-red-500/20'
+                    }`}
+                  >
                     {doc.status}
                   </span>
+                  <button
+                    onClick={() => handleDelete(doc.id)}
+                    className="p-1.5 rounded-lg text-[var(--text-dim)] hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                    title="删除文档"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               </div>
             ))
