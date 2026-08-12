@@ -1,279 +1,294 @@
-import React, { useState, useEffect } from 'react'
+import React, { useMemo, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
+import { AppDispatch } from '@/app/providers/store'
 import { RootState } from '@/app/providers/store'
 import {
-  setSessions,
+  createChat,
   setCurrentChat,
+  deleteChat,
+  renameChat,
+  togglePinChat,
   setActiveTab,
-  deleteChat as deleteChatAction,
-  togglePinChat as togglePinAction,
-  renameChat as renameAction,
 } from '@/entities/chat/model/chatSlice'
-import { HttpClient } from '@ai-workspace/sdk'
-import { NavTab } from '@ai-workspace/sdk'
 import {
-  BookOpen,
-  Sparkles,
+  MessageSquarePlus,
   Settings,
-  Plus,
-  Database,
-  Cpu,
+  MoreVertical,
   Pin,
-  PinOff,
   Trash2,
-  Pencil,
-  MessageSquare,
-  Hexagon,
+  Bot,
+  TicketCheck,
+  Database,
+  Library,
+  Workflow,
 } from 'lucide-react'
+import { useI18n } from '@/entities/i18n/model/useI18n'
+import { useTheme } from '@/entities/theme/model/themeContext'
+import { HttpClient } from '@ai-workspace/sdk'
 
 const api = new HttpClient('http://localhost:3000')
 
-export const Sidebar: React.FC = () => {
-  const dispatch = useDispatch()
-  const { activeTab, sessions, currentChatId, selectedModel } = useSelector(
-    (state: RootState) => state.chat,
-  )
+interface SidebarChatItemProps {
+  chat: { id: string; title: string; date: string; pinned: boolean }
+  isActive: boolean
+  isNew: boolean
+  onRename: (id: string, title: string) => Promise<void>
+  onDelete: (id: string) => void
+  onPin: (id: string) => void
+}
 
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [editValue, setEditValue] = useState('')
+const SidebarChatItem: React.FC<SidebarChatItemProps> = ({
+  chat,
+  isActive,
+  isNew,
+  onRename,
+  onDelete,
+  onPin,
+}) => {
+  const { mode } = useTheme()
+  const isDark = mode === 'dark'
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [editTitle, setEditTitle] = useState(chat.title)
 
-  useEffect(() => {
-    api
-      .getChats()
-      .then((chats) => {
-        dispatch(
-          setSessions(
-            chats.map((c) => ({
-              id: c.id,
-              title: c.title,
-              date: c.date,
-              pinned: c.pinned,
-            })),
-          ),
-        )
-      })
-      .catch(() => {})
-  }, [dispatch])
-
-  const navItems: { id: NavTab; label: string; icon: React.ReactNode; desc: string }[] = [
-    { id: 'knowledge', label: '知识库', icon: <BookOpen className="w-4 h-4" />, desc: 'RAG 文档' },
-    { id: 'prompts', label: '提示词', icon: <Sparkles className="w-4 h-4" />, desc: '角色工场' },
-    { id: 'settings', label: '设置', icon: <Settings className="w-4 h-4" />, desc: '偏好配置' },
-  ]
-
-  const handleNewChat = () => {
-    dispatch(setCurrentChat(null))
-    dispatch(setActiveTab('chat'))
-  }
-
-  const handleSelectChat = (id: string) => {
-    dispatch(setCurrentChat(id))
-    dispatch(setActiveTab('chat'))
-  }
-
-  const handleStartRename = (id: string, title: string) => {
-    setEditingId(id)
-    setEditValue(title)
-  }
-
-  const handleSaveRename = (id: string) => {
-    const trimmed = editValue.trim()
-    if (trimmed) {
-      dispatch(renameAction({ id, title: trimmed }))
-      api.renameChat(id, trimmed).catch(() => {})
+  const handleSaveRename = async () => {
+    if (editTitle.trim() !== chat.title) {
+      await onRename(chat.id, editTitle.trim())
     }
-    setEditingId(null)
-    setEditValue('')
+    setEditing(false)
   }
-
-  const handleDelete = (id: string) => {
-    dispatch(deleteChatAction(id))
-    api.deleteChat(id).catch(() => {})
-  }
-
-  const handleTogglePin = (id: string) => {
-    dispatch(togglePinAction(id))
-    api.togglePinChat(id).catch(() => {})
-  }
-
-  const sorted = [...sessions].sort((a, b) => {
-    if (a.pinned && !b.pinned) return -1
-    if (!a.pinned && b.pinned) return 1
-    return 0
-  })
 
   return (
-    <aside className="w-64 bg-[var(--bg-panel)] border-r border-[var(--border-color)] flex flex-col h-full select-none relative overflow-hidden">
-      {/* 背景微光 */}
-      <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-bl from-amber-500/[0.03] to-transparent rounded-full blur-3xl pointer-events-none" />
+    <div
+      className={`group flex items-center gap-2 px-2.5 py-2 rounded-xl text-sm cursor-pointer transition-all duration-200 ${isNew ? '' : ''}`}
+      style={
+        isActive
+          ? {
+              background: isDark ? 'rgba(34,211,238,.1)' : 'rgba(34,211,238,.08)',
+              border: `1px solid ${isDark ? 'rgba(34,211,238,.2)' : 'rgba(34,211,238,.15)'}`,
+              color: '#22d3ee',
+            }
+          : { color: isDark ? '#94a3b8' : '#64748b', border: '1px solid transparent' }
+      }
+      onClick={() => {
+        if (!editing) setMenuOpen(!menuOpen)
+      }}
+    >
+      <MessageSquarePlus className={`w-4 h-4 shrink-0 ${isActive ? '' : 'opacity-50'}`} />
+      {editing ? (
+        <input
+          value={editTitle}
+          onChange={(e) => setEditTitle(e.target.value)}
+          onBlur={handleSaveRename}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') handleSaveRename()
+          }}
+          onClick={(e) => e.stopPropagation()}
+          className="flex-1 min-w-0 bg-transparent text-sm focus:outline-none"
+          style={{ color: isActive ? '#22d3ee' : 'var(--text-main)' }}
+          autoFocus
+        />
+      ) : (
+        <span className="flex-1 min-w-0 truncate">{chat.title}</span>
+      )}
 
-      {/* 品牌区 */}
-      <div className="p-4 border-b border-[var(--border-color)]/60">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-600 via-orange-600 to-yellow-600 flex items-center justify-center shadow-lg shadow-amber-900/30 relative overflow-hidden">
-            <div className="absolute inset-0 bg-gradient-to-tl from-white/10 to-transparent" />
-            <Hexagon className="w-5 h-5 text-white relative" strokeWidth={1.5} />
+      {/* Actions */}
+      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            onPin(chat.id)
+          }}
+          className="p-1 rounded hover:bg-white/5 transition-colors"
+          style={{ color: chat.pinned ? 'var(--accent-cyan)' : 'var(--text-dim)' }}
+        >
+          <Pin className="w-3.5 h-3.5" />
+        </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            setEditing(true)
+          }}
+          className="p-1 rounded hover:bg-white/5 transition-colors"
+          style={{ color: 'var(--text-dim)' }}
+        >
+          <MoreVertical className="w-3.5 h-3.5" />
+        </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            onDelete(chat.id)
+          }}
+          className="p-1 rounded hover:bg-red-500/10 transition-colors"
+          style={{ color: 'var(--text-dim)' }}
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+export const Sidebar: React.FC = () => {
+  const dispatch = useDispatch<AppDispatch>()
+  const { t } = useI18n()
+  const { sessions, currentChatId, activeTab } = useSelector((state: RootState) => state.chat)
+
+  const navItems = [
+    { id: 'tickets' as const, label: t('sidebar.tickets'), icon: TicketCheck },
+    { id: 'knowledge' as const, label: t('sidebar.knowledge'), icon: Database },
+    { id: 'prompts' as const, label: t('sidebar.prompts'), icon: Library },
+    { id: 'tasks' as const, label: t('sidebar.tasks'), icon: Workflow },
+  ]
+
+  const sessionsList = useMemo(() => {
+    const pinned = sessions.filter((s) => s.pinned).sort((a, b) => a.title.localeCompare(b.title))
+    const unpinned = sessions.filter((s) => !s.pinned).sort((a, b) => b.date.localeCompare(a.date))
+    return [...pinned, ...unpinned]
+  }, [sessions])
+
+  const handleNewChat = async () => {
+    try {
+      const res = await api.createChat('New Conversation')
+      dispatch(createChat(res.id))
+    } catch {
+      const id = `chat_${Date.now()}`
+      dispatch(createChat(id))
+    }
+  }
+
+  const handleDelete = async (id: string) => {
+    await api.deleteChat(id)
+    dispatch(deleteChat(id))
+  }
+
+  const handleRename = async (id: string, title: string) => {
+    await api.renameChat(id, title)
+    dispatch(renameChat({ id, title }))
+  }
+
+  const handlePin = async (id: string) => {
+    await api.togglePinChat(id)
+    dispatch(togglePinChat(id))
+  }
+
+  const handleSelect = (id: string) => {
+    dispatch(setCurrentChat(id))
+  }
+
+  return (
+    <aside
+      className="flex flex-col shrink-0 border-r"
+      style={{
+        width: 260,
+        background: 'var(--bg-panel)',
+        borderColor: 'var(--border)',
+      }}
+    >
+      {/* Brand */}
+      <div className="px-4 py-4">
+        <div className="flex items-center gap-2.5">
+          <div
+            className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"
+            style={{
+              background: 'linear-gradient(135deg,#f59e0b,#ef4444)',
+              boxShadow: '0 0 20px rgba(245,158,11,.3)',
+            }}
+          >
+            <Bot className="w-4 h-4 text-white" />
           </div>
           <div>
-            <h1 className="font-semibold text-sm text-[var(--text-primary)] tracking-wide">
-              AI 工作区
+            <h1 className="text-sm font-bold" style={{ color: 'var(--text-main)' }}>
+              AI WS
             </h1>
-            <span className="text-[11px] text-[var(--text-muted)] flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 status-dot" />
-              智能体在线
-            </span>
+            <p className="text-[10px]" style={{ color: 'var(--text-dim)' }}>
+              v0.1.0
+            </p>
           </div>
         </div>
       </div>
 
-      {/* 新建按钮 */}
-      <div className="p-3">
+      {/* New Chat button */}
+      <div className="px-3 mb-3">
         <button
           onClick={handleNewChat}
-          className="w-full py-2.5 px-3 rounded-xl bg-[var(--bg-hover)] hover:bg-amber-900/30 border border-[var(--border-color)] hover:border-amber-700/30 text-[var(--text-secondary)] hover:text-amber-200 text-xs font-medium flex items-center justify-center gap-2 transition-all duration-200 group"
+          className="w-full flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm font-medium transition-all hover:opacity-90 active:scale-[0.98]"
+          style={{
+            background: 'linear-gradient(135deg,#f59e0b,#ef4444)',
+            color: '#fff',
+            boxShadow: '0 4px 16px rgba(245,158,11,.25)',
+          }}
         >
-          <Plus className="w-3.5 h-3.5 group-hover:rotate-90 transition-transform duration-200" />
-          新建聊天
+          <MessageSquarePlus className="w-4 h-4" />
+          {t('sidebar.newChat')}
         </button>
       </div>
 
-      {/* 导航 */}
-      <div className="px-3 py-2 space-y-0.5">
-        <div className="text-[10px] uppercase tracking-widest text-[var(--text-dim)] font-semibold px-2 mb-2">
-          功能
-        </div>
-        {navItems.map((item) => (
-          <button
-            key={item.id}
-            onClick={() => dispatch(setActiveTab(item.id))}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-medium transition-all duration-200 ${
-              activeTab === item.id
-                ? 'bg-amber-500/10 text-amber-200 border border-amber-700/20'
-                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
-            }`}
-          >
-            <span
-              className={`${activeTab === item.id ? 'text-amber-400' : 'text-[var(--text-muted)]'}`}
+      <div className="px-3 mb-3 space-y-1">
+        {navItems.map((item) => {
+          const Icon = item.icon
+          const active = activeTab === item.id
+          return (
+            <button
+              key={item.id}
+              onClick={() => dispatch(setActiveTab(item.id))}
+              className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm transition-all"
+              style={
+                active
+                  ? {
+                      background: 'rgba(245,158,11,.12)',
+                      color: '#f59e0b',
+                      border: '1px solid rgba(245,158,11,.18)',
+                    }
+                  : { color: 'var(--text-muted)', border: '1px solid transparent' }
+              }
             >
-              {item.icon}
-            </span>
-            <span className="flex-1 text-left">{item.label}</span>
-            {activeTab === item.id && (
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-            )}
-          </button>
-        ))}
+              <Icon className="w-4 h-4" />
+              {item.label}
+            </button>
+          )
+        })}
       </div>
 
-      {/* 会话列表 */}
-      <div className="flex-1 overflow-y-auto px-3 py-2 mt-1">
-        <div className="text-[10px] uppercase tracking-widest text-[var(--text-dim)] font-semibold px-2 mb-2 flex items-center justify-between">
-          <span>最近对话</span>
-          {sessions.length > 0 && (
-            <span className="text-[var(--text-dim)] font-normal">{sessions.length}</span>
+      {/* Session list */}
+      <div className="flex-1 overflow-y-auto px-3 pb-3">
+        <p
+          className="text-[10px] font-mono uppercase tracking-widest mb-2"
+          style={{ color: 'var(--text-dim)' }}
+        >
+          {t('sidebar.conversations')}
+        </p>
+        <div className="space-y-1">
+          {sessionsList.map((chat) => (
+            <div key={chat.id} onClick={() => handleSelect(chat.id)}>
+              <SidebarChatItem
+                chat={chat}
+                isActive={currentChatId === chat.id}
+                isNew={false}
+                onRename={handleRename}
+                onDelete={handleDelete}
+                onPin={handlePin}
+              />
+            </div>
+          ))}
+          {sessionsList.length === 0 && (
+            <p className="text-xs py-4 text-center" style={{ color: 'var(--text-dim)' }}>
+              {t('chat.selectConv')}
+            </p>
           )}
         </div>
-
-        {sessions.length === 0 ? (
-          <div className="px-2 py-6 text-center">
-            <MessageSquare className="w-5 h-5 text-[var(--text-dim)] mx-auto mb-2 opacity-50" />
-            <p className="text-[11px] text-[var(--text-dim)]">暂无对话记录</p>
-          </div>
-        ) : (
-          <div className="space-y-0.5">
-            {sorted.map((chat) => (
-              <div
-                key={chat.id}
-                className={`group relative flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs transition-all duration-150 cursor-pointer ${
-                  currentChatId === chat.id
-                    ? 'bg-amber-500/10 text-amber-100 border border-amber-700/20'
-                    : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'
-                }`}
-                onClick={() => handleSelectChat(chat.id)}
-              >
-                <div className="flex items-center gap-2 min-w-0 flex-1">
-                  {chat.pinned && (
-                    <Pin className="w-3 h-3 text-amber-400 shrink-0 fill-amber-400/50" />
-                  )}
-                  {editingId === chat.id ? (
-                    <input
-                      className="flex-1 bg-[var(--bg-hover)] text-xs text-[var(--text-primary)] px-1.5 py-0.5 rounded border border-amber-500/50 outline-none min-w-0"
-                      value={editValue}
-                      onChange={(e) => setEditValue(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleSaveRename(chat.id)
-                        if (e.key === 'Escape') setEditingId(null)
-                      }}
-                      onBlur={() => handleSaveRename(chat.id)}
-                      autoFocus
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                  ) : (
-                    <span className="truncate font-medium">{chat.title}</span>
-                  )}
-                </div>
-
-                {editingId !== chat.id && (
-                  <div className="hidden group-hover:flex items-center gap-0.5 shrink-0">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        handleTogglePin(chat.id)
-                      }}
-                      className="p-1 rounded-md hover:bg-amber-700/20 text-[var(--text-muted)] hover:text-amber-400 transition-colors"
-                      title={chat.pinned ? '取消固定' : '固定'}
-                    >
-                      {chat.pinned ? <PinOff className="w-3 h-3" /> : <Pin className="w-3 h-3" />}
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        handleStartRename(chat.id, chat.title)
-                      }}
-                      className="p-1 rounded-md hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
-                      title="重命名"
-                    >
-                      <Pencil className="w-3 h-3" />
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        handleDelete(chat.id)
-                      }}
-                      className="p-1 rounded-md hover:bg-red-900/20 text-[var(--text-muted)] hover:text-red-400 transition-colors"
-                      title="删除"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
       </div>
 
-      {/* 底部状态 */}
-      <div className="p-3">
-        <div className="rounded-xl bg-[var(--bg-card)] border border-[var(--border-color)] p-3 space-y-2.5">
-          <div className="flex items-center gap-2 text-xs font-medium text-[var(--text-secondary)]">
-            <Cpu className="w-3.5 h-3.5 text-amber-400" />
-            <span>运行时</span>
-          </div>
-          <div className="text-[11px] text-[var(--text-muted)] flex items-center justify-between">
-            <span>模型</span>
-            <span className="text-[var(--text-primary)] font-mono text-[10px] px-2 py-0.5 bg-[var(--bg-hover)] rounded-md border border-[var(--border-color)]">
-              {selectedModel}
-            </span>
-          </div>
-          <div className="text-[11px] text-[var(--text-muted)] flex items-center justify-between">
-            <span>存储</span>
-            <span className="text-[var(--text-primary)] font-mono text-[10px] px-2 py-0.5 bg-[var(--bg-hover)] rounded-md border border-[var(--border-color)] flex items-center gap-1">
-              <Database className="w-2.5 h-2.5 text-emerald-400" />
-              MySQL
-            </span>
-          </div>
-        </div>
+      {/* Footer */}
+      <div className="px-3 py-3 border-t" style={{ borderColor: 'var(--border)' }}>
+        <button
+          onClick={() => dispatch(setActiveTab('settings'))}
+          className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm transition-all hover:bg-white/5"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          <Settings className="w-4 h-4" />
+          {t('sidebar.settings')}
+        </button>
       </div>
     </aside>
   )

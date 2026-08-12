@@ -1,175 +1,431 @@
-import React from 'react'
-import { Key, Database, Save, RotateCcw, Palette, Globe, Bell } from 'lucide-react'
+import React, { useEffect, useRef, useState } from 'react'
+import { useDispatch, useSelector } from 'react-redux'
+import { HttpClient } from '@ai-workspace/sdk'
+import { RootState } from '@/app/providers/store'
+import { setSelectedModel } from '@/entities/chat/model/chatSlice'
+import { Loader2, MessageSquare, Monitor, RefreshCw, Save, Server, UserCog } from 'lucide-react'
+import { useI18n } from '@/entities/i18n/model/useI18n'
 
-const settingSections = [
-  {
-    icon: <Key className="w-5 h-5 text-amber-400" />,
-    title: 'AI 供应方',
-    sub: 'API Key 与推理端点配置',
-    iconBg: 'bg-amber-500/10 border-amber-700/20',
-    fields: [
-      {
-        label: 'OpenAI API Key',
-        value: 'sk-proj-****************************************',
-        type: 'password',
-        mono: true,
-      },
-      {
-        label: '自定义推理端点（选填）',
-        value: '',
-        placeholder: 'https://api.example.com/v1',
-        type: 'text',
-      },
-    ],
-  },
-  {
-    icon: <Database className="w-5 h-5 text-emerald-400" />,
-    title: '数据存储',
-    sub: 'MySQL 连接与缓存层配置',
-    iconBg: 'bg-emerald-500/10 border-emerald-700/20',
-    fields: [
-      {
-        label: 'MySQL 连接串',
-        value: 'mysql://root:root@localhost:3306/ai_workspace',
-        type: 'text',
-        mono: true,
-      },
-      { label: 'Redis 主机', value: 'redis://localhost:6379', type: 'text', mono: true },
-    ],
-  },
-]
+const api = new HttpClient('http://localhost:3000')
 
-const appSettings = [
-  {
-    label: '深色主题',
-    desc: '使用暖色调深色主题（当前为专属优化配色）',
-    type: 'toggle',
-    on: true,
-    icon: Palette,
-  },
-  {
-    label: '开机自启',
-    desc: '系统启动时自动运行 AI 工作台',
-    type: 'toggle',
-    on: false,
-    icon: Globe,
-  },
-  { label: '桌面通知', desc: '回复完成后发送系统通知提醒', type: 'toggle', on: true, icon: Bell },
-]
+// Default model list used when no API endpoint exists
+const DEFAULT_MODELS = [{ id: 'glm-4.5-air', name: 'GLM-4.5-Air' }]
 
 export const SettingsPage: React.FC = () => {
-  return (
-    <div className="p-6 h-full overflow-y-auto space-y-5">
-      {/* ===== 页面标题 ===== */}
-      <div className="animate-fade-slide">
-        <h3 className="text-lg font-semibold text-[var(--text-primary)] tracking-tight">
-          系统设置
-        </h3>
-        <p className="text-xs text-[var(--text-muted)] mt-1">配置 AI 供应方、数据存储与应用偏好</p>
-      </div>
+  const { t } = useI18n()
+  const dispatch = useDispatch()
+  const currentModel = useSelector((state: RootState) => state.chat.selectedModel)
+  const [settings, setSettings] = useState<Record<string, string>>({})
+  const [saving, setSaving] = useState(false)
+  const [savedKey, setSavedKey] = useState('')
+  const [loadStatus, setLoadStatus] = useState<'loading' | 'loaded' | 'error'>('loading')
+  const [models, setModels] = useState<{ id: string; name: string }[]>(DEFAULT_MODELS)
+  const modelsLoaded = useRef(false)
 
-      {/* ===== API & 存储设置 ===== */}
-      {settingSections.map((section, si) => (
-        <div
-          key={si}
-          className="rounded-xl bg-[var(--bg-panel)] border border-[var(--border-color)] overflow-hidden animate-fade-slide"
-          style={{ animationDelay: `${si * 0.1}s` }}
-        >
-          {/* 区块头 */}
-          <div className="px-5 py-4 border-b border-[var(--border-color)]/60 flex items-center gap-3.5">
+  useEffect(() => {
+    loadAll()
+  }, [])
+
+  const loadAll = async () => {
+    try {
+      await Promise.all([loadSettings(), loadModels()])
+      setLoadStatus('loaded')
+    } catch {
+      setLoadStatus('error')
+    }
+  }
+
+  const loadSettings = async () => {
+    try {
+      const res = await api.getSettings()
+      const map: Record<string, string> = {}
+      for (const item of res.data) {
+        map[item.key] = item.value
+      }
+      setSettings(map)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const loadModels = async () => {
+    if (modelsLoaded.current) return
+    modelsLoaded.current = true
+    // No listModels endpoint in current SDK; use defaults
+    setModels(DEFAULT_MODELS)
+  }
+
+  const handleModelChange = async (modelId: string) => {
+    dispatch(setSelectedModel(modelId))
+    await api.updateSettings({ LLM_MODEL: modelId })
+  }
+
+  const handleSave = async (key: string, value: string) => {
+    setSaving(true)
+    setSavedKey(key)
+    try {
+      await api.updateSettings({ [key]: value })
+      setSettings((prev) => ({ ...prev, [key]: value }))
+      setTimeout(() => setSavedKey(''), 1500)
+    } catch {
+      setSavedKey('')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const inputClass =
+    'w-full border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-cyan-500/40 transition-colors font-mono'
+
+  return (
+    <div className="flex flex-col h-full" style={{ background: 'var(--bg-void)' }}>
+      <div
+        className="h-px w-full"
+        style={{ background: 'linear-gradient(90deg,transparent,var(--glow-cyan),transparent)' }}
+      />
+
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-2xl mx-auto px-8 py-8 space-y-6">
+          {/* Header */}
+          <div className="flex items-center gap-3 fade-up">
             <div
-              className={`w-9 h-9 rounded-xl ${section.iconBg} border flex items-center justify-center shrink-0`}
+              className="w-10 h-10 rounded-xl flex items-center justify-center"
+              style={{
+                background: 'linear-gradient(135deg,rgba(34,211,238,.15),rgba(99,102,241,.1))',
+                border: '1px solid rgba(34,211,238,.2)',
+              }}
             >
-              {section.icon}
+              <UserCog className="w-5 h-5" style={{ color: 'var(--accent-cyan)' }} />
             </div>
             <div>
-              <h4 className="text-sm font-semibold text-[var(--text-primary)]">{section.title}</h4>
-              <span className="text-[11px] text-[var(--text-dim)]">{section.sub}</span>
+              <h1 className="text-xl font-bold" style={{ color: 'var(--text-main)' }}>
+                {t('settings.title')}
+              </h1>
+              <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                管理 API 配置、默认模型和通用偏好设置
+              </p>
             </div>
           </div>
 
-          {/* 字段 */}
-          <div className="px-5 py-4 space-y-4">
-            {section.fields.map((field, fi) => (
-              <div key={fi}>
-                <label className="block text-xs text-[var(--text-muted)] mb-1.5 font-medium">
-                  {field.label}
+          {/* ── API Connection ── */}
+          <div
+            className="rounded-2xl border p-5 fade-up fade-up-delay-1"
+            style={{ background: 'var(--bg-panel)', borderColor: 'var(--border)' }}
+          >
+            <div
+              className="text-xs font-semibold uppercase tracking-widest mb-4 flex items-center gap-2"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              <Server className="w-3.5 h-3.5" /> API 连接
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label
+                  className="block text-xs mb-1.5 font-medium"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  {t('settings.apiKey')}
                 </label>
                 <input
-                  type={field.type}
-                  defaultValue={field.value}
-                  placeholder={field.placeholder}
-                  className={`warm-input w-full rounded-xl px-3.5 py-2.5 text-xs text-[var(--text-primary)] placeholder-[var(--text-dim)] ${field.mono ? 'font-mono' : ''}`}
+                  type="password"
+                  value={settings['API_KEY'] || ''}
+                  onChange={(e) =>
+                    setSettings((prev) => ({ ...prev, ['API_KEY']: e.target.value }))
+                  }
+                  placeholder="sk-..."
+                  className={inputClass}
+                  style={{
+                    background: 'var(--input-bg)',
+                    borderColor: 'var(--border)',
+                    color: 'var(--text-main)',
+                  }}
                 />
               </div>
-            ))}
-          </div>
-        </div>
-      ))}
-
-      {/* ===== 应用偏好 ===== */}
-      <div
-        className="rounded-xl bg-[var(--bg-panel)] border border-[var(--border-color)] overflow-hidden animate-fade-slide"
-        style={{ animationDelay: '0.2s' }}
-      >
-        <div className="px-5 py-4 border-b border-[var(--border-color)]/60 flex items-center gap-3.5">
-          <div className="w-9 h-9 rounded-xl bg-violet-500/10 border-violet-700/20 border flex items-center justify-center shrink-0">
-            <Globe className="w-5 h-5 text-violet-400" />
-          </div>
-          <div>
-            <h4 className="text-sm font-semibold text-[var(--text-primary)]">应用偏好</h4>
-            <span className="text-[11px] text-[var(--text-dim)]">桌面端行为与通知设置</span>
-          </div>
-        </div>
-
-        <div className="divide-y divide-[var(--border-color)]/50">
-          {appSettings.map((s, si) => {
-            const Icon = s.icon
-            return (
-              <div
-                key={si}
-                className="px-5 py-4 flex items-center justify-between hover:bg-[var(--bg-hover)]/40 transition-colors"
-              >
-                <div className="flex items-center gap-3">
-                  <Icon className="w-4 h-4 text-[var(--text-muted)]" />
-                  <div>
-                    <p className="text-xs font-medium text-[var(--text-primary)]">{s.label}</p>
-                    <p className="text-[11px] text-[var(--text-dim)] mt-0.5">{s.desc}</p>
-                  </div>
-                </div>
-                {/* 自定义切换按钮 */}
-                <button
-                  className={`relative w-9 h-5 rounded-full transition-colors duration-200 cursor-pointer ${
-                    s.on
-                      ? 'bg-amber-600'
-                      : 'bg-[var(--bg-hover)] border border-[var(--border-color)]'
-                  }`}
+              <div>
+                <label
+                  className="block text-xs mb-1.5 font-medium"
+                  style={{ color: 'var(--text-muted)' }}
                 >
-                  <span
-                    className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform duration-200 ${
-                      s.on ? 'translate-x-4' : 'translate-x-0.5'
-                    }`}
-                  />
-                </button>
+                  {t('settings.apiUrl')}
+                </label>
+                <input
+                  type="text"
+                  value={settings['API_URL'] || ''}
+                  onChange={(e) =>
+                    setSettings((prev) => ({ ...prev, ['API_URL']: e.target.value }))
+                  }
+                  placeholder="http://localhost:3000"
+                  className={inputClass}
+                  style={{
+                    background: 'var(--input-bg)',
+                    borderColor: 'var(--border)',
+                    color: 'var(--text-main)',
+                  }}
+                />
               </div>
-            )
-          })}
-        </div>
-      </div>
+              <div>
+                <label
+                  className="block text-xs mb-1.5 font-medium"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  {t('settings.embeddingModel')}
+                </label>
+                <input
+                  type="text"
+                  value={settings['EMBEDDING_MODEL'] || ''}
+                  onChange={(e) =>
+                    setSettings((prev) => ({ ...prev, ['EMBEDDING_MODEL']: e.target.value }))
+                  }
+                  placeholder="text-embedding-ada-002"
+                  className={inputClass}
+                  style={{
+                    background: 'var(--input-bg)',
+                    borderColor: 'var(--border)',
+                    color: 'var(--text-main)',
+                  }}
+                />
+              </div>
+            </div>
+          </div>
 
-      {/* ===== 操作按钮 ===== */}
-      <div
-        className="flex items-center justify-end gap-3 pt-2 animate-fade-slide"
-        style={{ animationDelay: '0.3s' }}
-      >
-        <button className="px-4 py-2.5 rounded-xl bg-[var(--bg-card)] border border-[var(--border-color)] hover:bg-[var(--bg-hover)] text-[var(--text-secondary)] text-xs font-medium flex items-center gap-2 transition-all">
-          <RotateCcw className="w-3.5 h-3.5" />
-          重置默认
-        </button>
-        <button className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white text-xs font-semibold flex items-center gap-2 shadow-md shadow-amber-900/25 transition-all">
-          <Save className="w-3.5 h-3.5" />
-          保存修改
-        </button>
+          {/* ── General Settings ── */}
+          <div
+            className="rounded-2xl border p-5 fade-up fade-up-delay-2"
+            style={{ background: 'var(--bg-panel)', borderColor: 'var(--border)' }}
+          >
+            <div
+              className="text-xs font-semibold uppercase tracking-widest mb-4 flex items-center gap-2"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              <Monitor className="w-3.5 h-3.5" /> 通用设置
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label
+                  className="block text-xs mb-1.5 font-medium"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  {t('settings.defaultModel')}
+                </label>
+                <select
+                  value={currentModel}
+                  onChange={(e) => handleModelChange(e.target.value)}
+                  disabled={models.length === 0}
+                  className={`w-full border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-cyan-500/40 transition-colors ${
+                    loadStatus === 'error' ? 'border-red-500/40' : ''
+                  }`}
+                  style={{
+                    background: 'var(--input-bg)',
+                    borderColor: loadStatus === 'error' ? 'rgba(239,68,68,.3)' : 'var(--border)',
+                    color: 'var(--text-main)',
+                  }}
+                >
+                  {loadStatus === 'loading' && <option value="">加载中...</option>}
+                  {loadStatus === 'error' && <option value="">加载失败，请检查后端</option>}
+                  {models.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+                {loadStatus === 'error' && (
+                  <p className="text-[10px] text-red-400 mt-1.5">{t('settings.modelListError')}</p>
+                )}
+              </div>
+
+              <div>
+                <label
+                  className="block text-xs mb-1.5 font-medium"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  {t('settings.maxTokens')}
+                </label>
+                <input
+                  type="number"
+                  value={settings['MAX_TOKENS'] || '4096'}
+                  onChange={(e) =>
+                    setSettings((prev) => ({ ...prev, ['MAX_TOKENS']: e.target.value }))
+                  }
+                  className={inputClass}
+                  style={{
+                    background: 'var(--input-bg)',
+                    borderColor: 'var(--border)',
+                    color: 'var(--text-main)',
+                  }}
+                />
+              </div>
+
+              <div>
+                <label
+                  className="block text-xs mb-1.5 font-medium"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  {t('settings.temperature')}
+                </label>
+                <input
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  max="2"
+                  value={settings['TEMPERATURE'] || '0.7'}
+                  onChange={(e) =>
+                    setSettings((prev) => ({ ...prev, ['TEMPERATURE']: e.target.value }))
+                  }
+                  className={inputClass}
+                  style={{
+                    background: 'var(--input-bg)',
+                    borderColor: 'var(--border)',
+                    color: 'var(--text-main)',
+                  }}
+                />
+              </div>
+
+              <div>
+                <label
+                  className="block text-xs mb-1.5 font-medium"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  {t('settings.topP')}
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="1"
+                  value={settings['TOP_P'] || '0.9'}
+                  onChange={(e) => setSettings((prev) => ({ ...prev, ['TOP_P']: e.target.value }))}
+                  className={inputClass}
+                  style={{
+                    background: 'var(--input-bg)',
+                    borderColor: 'var(--border)',
+                    color: 'var(--text-main)',
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* ── Chat Settings ── */}
+          <div
+            className="rounded-2xl border p-5 fade-up fade-up-delay-3"
+            style={{ background: 'var(--bg-panel)', borderColor: 'var(--border)' }}
+          >
+            <div
+              className="text-xs font-semibold uppercase tracking-widest mb-4 flex items-center gap-2"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              <MessageSquare className="w-3.5 h-3.5" /> 对话设置
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label
+                  className="block text-xs mb-1.5 font-medium"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  {t('settings.maxMessages')}
+                </label>
+                <input
+                  type="number"
+                  value={settings['MAX_MESSAGES_IN_CONVERSATION'] || '50'}
+                  onChange={(e) =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      ['MAX_MESSAGES_IN_CONVERSATION']: e.target.value,
+                    }))
+                  }
+                  className={inputClass}
+                  style={{
+                    background: 'var(--input-bg)',
+                    borderColor: 'var(--border)',
+                    color: 'var(--text-main)',
+                  }}
+                />
+              </div>
+
+              <div>
+                <label
+                  className="block text-xs mb-1.5 font-medium"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  {t('settings.ragThreshold')}
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="1"
+                  value={settings['RAG_THRESHOLD'] || '0.25'}
+                  onChange={(e) =>
+                    setSettings((prev) => ({ ...prev, ['RAG_THRESHOLD']: e.target.value }))
+                  }
+                  className={inputClass}
+                  style={{
+                    background: 'var(--input-bg)',
+                    borderColor: 'var(--border)',
+                    color: 'var(--text-main)',
+                  }}
+                />
+              </div>
+
+              <div>
+                <label
+                  className="block text-xs mb-1.5 font-medium"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  {t('settings.ragTopK')}
+                </label>
+                <input
+                  type="number"
+                  value={settings['RAG_TOP_K'] || '5'}
+                  onChange={(e) =>
+                    setSettings((prev) => ({ ...prev, ['RAG_TOP_K']: e.target.value }))
+                  }
+                  className={inputClass}
+                  style={{
+                    background: 'var(--input-bg)',
+                    borderColor: 'var(--border)',
+                    color: 'var(--text-main)',
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Save button */}
+          <div className="flex items-center justify-end gap-3 fade-up">
+            <button
+              onClick={loadAll}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-medium transition-all hover:opacity-80"
+              style={{
+                background: 'var(--input-bg)',
+                border: '1px solid var(--border)',
+                color: 'var(--text-muted)',
+              }}
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> {t('settings.refresh')}
+            </button>
+            <button
+              onClick={() => handleSave('', '')}
+              disabled={saving}
+              className="flex items-center gap-2 px-5 py-2 rounded-xl text-xs font-semibold text-white transition-all disabled:opacity-40 hover:opacity-90 active:scale-[0.97]"
+              style={{
+                background: 'linear-gradient(135deg,#0ea5e9,#22d3ee)',
+                boxShadow: '0 4px 16px rgba(34,211,238,.25)',
+              }}
+            >
+              {saving ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" /> {t('settings.saving')}
+                </>
+              ) : (
+                <>
+                  <Save className="w-3.5 h-3.5" /> {t('settings.save')}
+                </>
+              )}
+              {savedKey && <span className="ml-1 text-emerald-300">✓</span>}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   )

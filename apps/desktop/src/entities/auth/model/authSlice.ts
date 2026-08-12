@@ -1,70 +1,40 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit'
-
-export interface UserInfo {
-  id: string
-  email: string
-  name: string
-  avatar?: string | null
-}
+import type { AuthUser } from '@ai-workspace/sdk'
 
 interface AuthState {
-  user: UserInfo | null
-  token: string | null
+  user: AuthUser | null
 }
 
-const initialState: AuthState = {
-  user: loadUser(),
-  token: loadToken(),
-}
-
-function loadUser(): UserInfo | null {
-  try {
-    const raw = localStorage.getItem('auth_user')
-    return raw ? JSON.parse(raw) : null
-  } catch {
-    return null
-  }
-}
-
-function loadToken(): string | null {
-  try {
-    return localStorage.getItem('auth_token')
-  } catch {
-    return null
-  }
+const persisted = localStorage.getItem('auth_user')
+let initialUser: AuthUser | null = null
+try {
+  initialUser = persisted ? (JSON.parse(persisted) as AuthUser) : null
+} catch {
+  localStorage.removeItem('auth_user')
 }
 
 export const authSlice = createSlice({
   name: 'auth',
-  initialState,
+  initialState: { user: initialUser } as AuthState,
   reducers: {
-    // 登录/注册成功：保存用户信息 + JWT token
-    loginSuccess: (state, action: PayloadAction<{ user: UserInfo; token: string }>) => {
-      state.user = action.payload.user
-      state.token = action.payload.token
-      try {
-        localStorage.setItem('auth_user', JSON.stringify(action.payload.user))
-        localStorage.setItem('auth_token', action.payload.token)
-      } catch {
-        // ignore
-      }
-    },
-    setUser: (state, action: PayloadAction<UserInfo | null>) => {
+    setUser: (state, action: PayloadAction<AuthUser>) => {
       state.user = action.payload
-      if (action.payload) {
-        localStorage.setItem('auth_user', JSON.stringify(action.payload))
-      } else {
-        localStorage.removeItem('auth_user')
-      }
+      localStorage.setItem('auth_token', action.payload.token)
+      localStorage.setItem('auth_user', JSON.stringify(action.payload))
+    },
+    updateUser: (state, action: PayloadAction<Partial<AuthUser>>) => {
+      if (!state.user) return
+      state.user = { ...state.user, ...action.payload }
+      localStorage.setItem('auth_user', JSON.stringify(state.user))
     },
     logout: (state) => {
       state.user = null
-      state.token = null
-      localStorage.removeItem('auth_user')
       localStorage.removeItem('auth_token')
+      localStorage.removeItem('auth_user')
     },
   },
 })
 
-export const { loginSuccess, setUser, logout } = authSlice.actions
+export const { setUser: setAuthUser, logout: logoutUser, updateUser } = authSlice.actions
+
 export default authSlice.reducer
