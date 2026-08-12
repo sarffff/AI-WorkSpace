@@ -1,11 +1,30 @@
-export { HttpClient } from './http-client'
+export { HttpClient, AUTH_UNAUTHORIZED_EVENT } from './http-client'
 export { WsClient } from './ws-client'
 export type { MessageHandler } from './ws-client'
 export type {
   Message,
+  MessageSource,
+  ToolActivityInfo,
   ChatSession,
   KnowledgeDocument,
+  KnowledgePage,
+  KnowledgeHit,
+  KnowledgeChunk,
+  Prompt,
+  SettingsItem,
   CompletionRequest,
   CompletionResponse,
   NavTab,
+  AgentTask,
+  AgentTaskStep,
+  ToolApprovalInfo,
+  AuthUser,
+  LoginResponse,
+  RegisterRequest,
+  SupportTicket,
+  TicketSuggestion,
+  TicketAuditEvent,
+  TicketSource,
+  TicketPriority,
+  TicketStatus,
 } from '@ai-workspace/types'
