@@ -1,0 +1,6 @@
+[31m[Nest] 16064  - [39m2026/08/08 18:29:13 [31m  ERROR[39m [38;5;3m[ExceptionsHandler] [39m[31m没有可更新的配置项[39m
+Error: 没有可更新的配置项
+    at SettingsController.updateSettings (D:\user\code\VSC\vsc_code\shixi\AI-Workspace\apps\server\dist\src\modules\settings\settings.controller.js:40:19)
+    at D:\user\code\VSC\vsc_code\shixi\AI-Workspace\node_modules\.pnpm\@nestjs+core@10.4.22_@nestjs+common@10.4.22_class-transformer@0.5.1_class-validator@0.14.4_re_s3zxsgsmsekta3oeycoqskcmia\node_modules\@nestjs\core\router\router-execution-context.js:38:29
+    at async D:\user\code\VSC\vsc_code\shixi\AI-Workspace\node_modules\.pnpm\@nestjs+core@10.4.22_@nestjs+common@10.4.22_class-transformer@0.5.1_class-validator@0.14.4_re_s3zxsgsmsekta3oeycoqskcmia\node_modules\@nestjs\core\router\router-execution-context.js:46:28
+    at async D:\user\code\VSC\vsc_code\shixi\AI-Workspace\node_modules\.pnpm\@nestjs+core@10.4.22_@nestjs+common@10.4.22_class-transformer@0.5.1_class-validator@0.14.4_re_s3zxsgsmsekta3oeycoqskcmia\node_modules\@nestjs\core\router\router-proxy.js:9:17

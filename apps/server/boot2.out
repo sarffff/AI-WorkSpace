@@ -1,0 +1,52 @@
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[NestFactory] [39m[32mStarting Nest application...[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[InstanceLoader] [39m[32mAppModule dependencies initialized[39m[38;5;3m +16ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[InstanceLoader] [39m[32mPrismaModule dependencies initialized[39m[38;5;3m +6ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[InstanceLoader] [39m[32mPassportModule dependencies initialized[39m[38;5;3m +1ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[InstanceLoader] [39m[32mConfigHostModule dependencies initialized[39m[38;5;3m +2ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[InstanceLoader] [39m[32mConfigModule dependencies initialized[39m[38;5;3m +2ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[InstanceLoader] [39m[32mRedisModule dependencies initialized[39m[38;5;3m +1ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[InstanceLoader] [39m[32mJwtModule dependencies initialized[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[InstanceLoader] [39m[32mPromptsModule dependencies initialized[39m[38;5;3m +1ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[InstanceLoader] [39m[32mAgentModule dependencies initialized[39m[38;5;3m +1ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[InstanceLoader] [39m[32mSettingsModule dependencies initialized[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[InstanceLoader] [39m[32mAuthModule dependencies initialized[39m[38;5;3m +1ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[InstanceLoader] [39m[32mTasksModule dependencies initialized[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[InstanceLoader] [39m[32mKnowledgeModule dependencies initialized[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[InstanceLoader] [39m[32mChatModule dependencies initialized[39m[38;5;3m +1ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RoutesResolver] [39m[32mAuthController {/auth}:[39m[38;5;3m +320ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/auth/register, POST} route[39m[38;5;3m +2ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/auth/login, POST} route[39m[38;5;3m +1ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RoutesResolver] [39m[32mChatController {/chats}:[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/chats, GET} route[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/chats, POST} route[39m[38;5;3m +1ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/chats/:id, PATCH} route[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/chats/:id/pin, PATCH} route[39m[38;5;3m +1ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/chats/:id, DELETE} route[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/chats/:id/messages, GET} route[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/chats/:id/tools/approval, POST} route[39m[38;5;3m +1ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/chats/:id/completions, POST} route[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/chats/:id/completions/stream, POST} route[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RoutesResolver] [39m[32mKnowledgeController {/knowledge}:[39m[38;5;3m +1ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/knowledge/documents, GET} route[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/knowledge/search, GET} route[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/knowledge/documents, POST} route[39m[38;5;3m +1ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/knowledge/documents/:id/reindex, POST} route[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/knowledge/documents/:id/chunks, GET} route[39m[38;5;3m +1ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/knowledge/documents/:id, DELETE} route[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RoutesResolver] [39m[32mSettingsController {/settings}:[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/settings, GET} route[39m[38;5;3m +1ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/settings, PATCH} route[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RoutesResolver] [39m[32mPromptsController {/prompts}:[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/prompts, GET} route[39m[38;5;3m +1ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/prompts, POST} route[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/prompts/:id, PATCH} route[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/prompts/:id, DELETE} route[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RoutesResolver] [39m[32mTasksController {/tasks}:[39m[38;5;3m +1ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/tasks, GET} route[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/tasks/:id, GET} route[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/tasks, POST} route[39m[38;5;3m +1ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/tasks/:id/run, POST} route[39m[38;5;3m +0ms[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[RouterExplorer] [39m[32mMapped {/tasks/:id, DELETE} route[39m[38;5;3m +0ms[39m
+[33m[Nest] 16108  - [39m2026/08/08 20:31:44 [33m   WARN[39m [38;5;3m[RedisService] [39m[33mREDIS_URL not configured. Redis is disabled.[39m
+[32m[Nest] 16108  - [39m2026/08/08 20:31:44 [32m    LOG[39m [38;5;3m[NestApplication] [39m[32mNest application successfully started[39m[38;5;3m +5ms[39m
+AI Workspace Server is running on: http://localhost:3000

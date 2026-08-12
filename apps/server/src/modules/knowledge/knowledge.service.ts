@@ -5,14 +5,18 @@ import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters'
 import * as pdfParse from 'pdf-parse'
 import * as mammoth from 'mammoth'
 import { PrismaService } from '@/prisma/prisma.service'
+import { SettingsService } from '@/modules/settings/settings.service'
 
 export interface RagHit {
   content: string
   score: number
+  documentId: string
+  documentName: string
+  index: number
 }
 
 // 支持解析的扩展名 → 抽取方式
-const TEXT_EXTS = new Set([
+export const TEXT_EXTS = new Set([
   'txt',
   'md',
   'markdown',
@@ -38,6 +42,8 @@ const TEXT_EXTS = new Set([
   'toml',
 ])
 
+const MAX_UPLOAD_BYTES = 30 * 1024 * 1024
+
 @Injectable()
 export class KnowledgeService {
   private readonly logger = new Logger(KnowledgeService.name)
@@ -50,79 +56,83 @@ export class KnowledgeService {
   constructor(
     private prisma: PrismaService,
     private configService: ConfigService,
+    private settingsService: SettingsService,
   ) {}
 
-  // 懒加载 embedding 客户端（避免无 API Key 时启动失败）
-  // 独立变量 EMBEDDING_* > 复用 LLM_* 配置，均为 OpenAI 兼容格式
-  private getEmbeddings(): OpenAIEmbeddings {
-    if (this.embeddings) return this.embeddings
-    this.embeddings = new OpenAIEmbeddings({
-      model:
-        this.configService.get<string>('EMBEDDING_MODEL') ||
-        this.configService.get<string>('LLM_EMBEDDING_MODEL') ||
-        'embedding-3',
-      apiKey:
-        this.configService.get<string>('EMBEDDING_API_KEY') ||
-        this.configService.get<string>('LLM_API_KEY'),
-      configuration: {
-        baseURL:
-          this.configService.get<string>('EMBEDDING_BASE_URL') ||
-          this.configService.get<string>('LLM_API_URL') ||
-          'https://open.bigmodel.cn/api/paas/v4/',
-      },
-    })
+  // 懒加载 embedding 客户端（独立变量 EMBEDDING_* 优先，均可被运行时设置覆盖）
+  private async getEmbeddings(): Promise<OpenAIEmbeddings> {
+    const [embeddingModel, embeddingKey, embeddingBaseUrl] = await Promise.all([
+      this.settingsService.get('EMBEDDING_MODEL'),
+      this.settingsService.get('EMBEDDING_API_KEY'),
+      this.settingsService.get('EMBEDDING_BASE_URL'),
+    ])
+    const model =
+      embeddingModel || this.configService.get<string>('LLM_EMBEDDING_MODEL') || 'embedding-3'
+    const apiKey = embeddingKey || this.configService.get<string>('LLM_API_KEY')
+    const baseURL =
+      embeddingBaseUrl ||
+      this.configService.get<string>('LLM_API_URL') ||
+      'https://open.bigmodel.cn/api/paas/v4/'
+
+    if (!this.embeddings) {
+      this.embeddings = new OpenAIEmbeddings({ model, apiKey, configuration: { baseURL } })
+    }
     return this.embeddings
   }
 
   // ===== 文档管理 =====
 
-  async getDocuments() {
+  // 分页获取文档列表
+  async getDocuments(userId: string, page = 1, pageSize = 20) {
+    const total = await this.prisma.document.count({ where: { ownerId: userId } })
     const docs = await this.prisma.document.findMany({
+      where: { ownerId: userId },
       orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
     })
-    return docs.map((d) => ({
-      id: d.id,
-      name: d.name,
-      size: d.size,
-      chunks: d.chunks,
-      status: d.status,
-    }))
+    return {
+      items: docs.map((d) => ({
+        id: d.id,
+        name: d.name,
+        size: d.size,
+        chunks: d.chunks,
+        status: d.status,
+      })),
+      total,
+      page,
+      pageSize,
+    }
   }
 
-  // 上传并索引：抽取文本 → 切块 → 向量化 → 入库
-  async uploadDocument(file: Express.Multer.File) {
+  // 上传并索引：抽取文本 → 切块 → 向量化 → 入库（原始文件一并存储，供重新索引）
+  async uploadDocument(userId: string, file: Express.Multer.File) {
     if (!file) throw new BadRequestException('未收到文件')
+    if (file.size > MAX_UPLOAD_BYTES) {
+      throw new BadRequestException('文件不能超过 30MB')
+    }
     const name = file.originalname || 'untitled'
     const ext = name.split('.').pop()?.toLowerCase() || ''
+    if (ext !== 'pdf' && ext !== 'docx' && !TEXT_EXTS.has(ext)) {
+      throw new BadRequestException(`不支持的文件类型: .${ext || 'unknown'}`)
+    }
 
     let doc = await this.prisma.document.create({
-      data: { name, size: file.size, chunks: 0, status: 'processing' },
+      data: {
+        name,
+        size: file.size,
+        chunks: 0,
+        status: 'processing',
+        fileBytes: file.buffer,
+        ownerId: userId,
+      },
     })
 
     try {
       const text = await this.extractText(file, ext)
-      const chunks = await this.splitter.splitText(text)
-
-      if (chunks.length === 0) {
-        throw new BadRequestException('未能从文件中抽取到文本内容')
-      }
-
-      const vectors = await this.getEmbeddings().embedDocuments(chunks)
-
-      await this.prisma.$transaction(
-        chunks.map((content, i) =>
-          this.prisma.knowledgeChunk.create({
-            data: { documentId: doc.id, index: i, content, embedding: vectors[i] },
-          }),
-        ),
-      )
-
-      doc = await this.prisma.document.update({
-        where: { id: doc.id },
-        data: { chunks: chunks.length, status: 'indexed' },
-      })
-
-      this.logger.log(`indexed "${name}": ${chunks.length} chunks`)
+      await this.indexChunks(doc.id, text)
+      doc = await this.prisma.document.findUniqueOrThrow({ where: { id: doc.id } })
+      this.logger.log(`indexed "${name}": ${doc.chunks} chunks`)
     } catch (err: unknown) {
       const errorMessage =
         err instanceof Error ? err.message : typeof err === 'string' ? err : JSON.stringify(err)
@@ -137,35 +147,111 @@ export class KnowledgeService {
     return { id: doc.id, name: doc.name, size: doc.size, chunks: doc.chunks, status: doc.status }
   }
 
-  async deleteDocument(id: string) {
-    const existing = await this.prisma.document.findUnique({ where: { id } })
+  // 重新索引：用存储的原始文件重新抽取/切块/向量化（处理失败文档重试）
+  async reindexDocument(userId: string, id: string) {
+    const doc = await this.prisma.document.findFirst({ where: { id, ownerId: userId } })
+    if (!doc) throw new NotFoundException('文档不存在')
+    if (!doc.fileBytes) throw new BadRequestException('该文档未保存原始文件，无法重新索引')
+
+    const file: Express.Multer.File = {
+      buffer: doc.fileBytes as Buffer,
+      originalname: doc.name,
+      size: doc.size,
+    } as Express.Multer.File
+    const ext = doc.name.split('.').pop()?.toLowerCase() || ''
+
+    await this.prisma.document.update({ where: { id }, data: { status: 'processing' } })
+    try {
+      const text = await this.extractText(file, ext)
+      await this.prisma.knowledgeChunk.deleteMany({ where: { documentId: id } })
+      await this.indexChunks(id, text)
+      const updated = await this.prisma.document.findUniqueOrThrow({ where: { id } })
+      this.logger.log(`reindexed "${doc.name}": ${updated.chunks} chunks`)
+      return { id: updated.id, name: updated.name, chunks: updated.chunks, status: updated.status }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      await this.prisma.document
+        .update({ where: { id }, data: { status: 'failed' } })
+        .catch(() => {})
+      throw new BadRequestException(`重新索引失败: ${message}`)
+    }
+  }
+
+  async deleteDocument(userId: string, id: string) {
+    const existing = await this.prisma.document.findFirst({ where: { id, ownerId: userId } })
     if (!existing) throw new NotFoundException('文档不存在')
     await this.prisma.document.delete({ where: { id } })
     return { success: true }
   }
 
+  // 查看文档的切块列表（预览用，不返回向量）
+  async getDocumentChunks(userId: string, id: string) {
+    const doc = await this.prisma.document.findFirst({ where: { id, ownerId: userId } })
+    if (!doc) throw new NotFoundException('文档不存在')
+    const chunks = await this.prisma.knowledgeChunk.findMany({
+      where: { documentId: id },
+      orderBy: { index: 'asc' },
+      select: { id: true, index: true, content: true },
+    })
+    return { documentId: id, chunks }
+  }
+
   // ===== 向量检索（RAG）=====
 
-  // 查询 → 向量化 → 全量余弦相似度 → Top-K 片段
-  async searchRelevant(query: string, topK = 4): Promise<RagHit[]> {
+  // 查询 → 向量化 → 全量余弦相似度 → Top-K 片段（阈值与数量可配置）
+  async searchRelevant(userId: string, query: string, topK = 4): Promise<RagHit[]> {
+    const [configuredTopK, configuredThreshold] = await Promise.all([
+      this.settingsService.getNumber('RAG_TOP_K', topK),
+      this.settingsService.getNumber('RAG_THRESHOLD', 0.25),
+    ])
+
     const chunks = await this.prisma.knowledgeChunk.findMany({
-      where: { document: { status: 'indexed' } },
+      where: { document: { status: 'indexed', ownerId: userId } },
+      include: { document: { select: { id: true, name: true } } },
       orderBy: { createdAt: 'asc' },
     })
     if (chunks.length === 0) return []
 
-    const queryVector = await this.getEmbeddings().embedQuery(query)
+    const embeddings = await this.getEmbeddings()
+    const queryVector = await embeddings.embedQuery(query)
     const scored = chunks.map((c) => ({
       content: c.content,
+      index: c.index,
+      documentId: c.document.id,
+      documentName: c.document.name,
       score: cosineSimilarity(queryVector, c.embedding as number[]),
     }))
 
     scored.sort((a, b) => b.score - a.score)
-    const hits = scored.slice(0, topK).filter((h) => h.score > 0.25)
-    return hits.map((h) => ({ content: h.content, score: Math.round(h.score * 1000) / 1000 }))
+    const hits = scored.slice(0, configuredTopK).filter((h) => h.score > configuredThreshold)
+    return hits.map((h) => ({ ...h, score: Math.round(h.score * 1000) / 1000 }))
   }
 
-  // ===== 文本抽取 =====
+  // ===== 内部工具 =====
+
+  // 切块 + 向量化 + 事务入库，返回块数
+  private async indexChunks(documentId: string, text: string): Promise<number> {
+    const chunks = await this.splitter.splitText(text)
+    if (chunks.length === 0) {
+      throw new BadRequestException('未能从文件中抽取到文本内容')
+    }
+
+    const embeddings = await this.getEmbeddings()
+    const vectors = await embeddings.embedDocuments(chunks)
+
+    await this.prisma.$transaction(
+      chunks.map((content, i) =>
+        this.prisma.knowledgeChunk.create({
+          data: { documentId, index: i, content, embedding: vectors[i] },
+        }),
+      ),
+    )
+    await this.prisma.document.update({
+      where: { id: documentId },
+      data: { chunks: chunks.length, status: 'indexed' },
+    })
+    return chunks.length
+  }
 
   private async extractText(file: Express.Multer.File, ext: string): Promise<string> {
     if (ext === 'pdf') {

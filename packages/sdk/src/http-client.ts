@@ -1,6 +1,30 @@
-import type { CompletionRequest, CompletionResponse, KnowledgeDocument } from '@ai-workspace/types'
+import type {
+  CompletionRequest,
+  CompletionResponse,
+  KnowledgeDocument,
+  KnowledgeHit,
+  KnowledgePage,
+  MessageSource,
+  Prompt,
+  SettingsItem,
+  ToolActivityInfo,
+  AgentTask,
+  ToolApprovalInfo,
+  LoginResponse,
+  RegisterRequest,
+  SupportTicket,
+  TicketPriority,
+} from '@ai-workspace/types'
 
-export type StreamChunk = { content?: string; done?: boolean; error?: string }
+export type StreamChunk = {
+  content?: string
+  sources?: MessageSource[]
+  toolCall?: { id: string; name: string; args: Record<string, unknown> }
+  toolResult?: { id: string; name: string; status: 'ok' | 'error' | 'denied' }
+  approval?: ToolApprovalInfo
+  done?: boolean
+  error?: string
+}
 
 // 401 → 通知全局登出（Redux 侧通过监听该事件清空登录态）
 export const AUTH_UNAUTHORIZED_EVENT = 'auth:unauthorized'
@@ -29,6 +53,8 @@ export interface ServerMessage {
   role: string
   content: string
   model?: string
+  sources?: MessageSource[] | null
+  tools?: ToolActivityInfo[] | null
   createdAt: string
 }
 
@@ -56,14 +82,28 @@ export class HttpClient {
     return res.json()
   }
 
+  // ===== 认证 =====
+
+  async login(email: string, password: string): Promise<LoginResponse> {
+    return this.request<LoginResponse>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    })
+  }
+
+  async register(data: RegisterRequest): Promise<LoginResponse> {
+    return this.request<LoginResponse>('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
   // ===== 会话管理 =====
 
-  // 获取最近对话列表
   async getChats(): Promise<ServerChatSession[]> {
     return this.request<ServerChatSession[]>('/chats')
   }
 
-  // 创建新会话
   async createChat(title?: string): Promise<ServerChatSession> {
     return this.request<ServerChatSession>('/chats', {
       method: 'POST',
@@ -71,7 +111,6 @@ export class HttpClient {
     })
   }
 
-  // 重命名会话
   async renameChat(id: string, title: string): Promise<ServerChatSession> {
     return this.request<ServerChatSession>(`/chats/${id}`, {
       method: 'PATCH',
@@ -79,19 +118,16 @@ export class HttpClient {
     })
   }
 
-  // 切换固定状态
   async togglePinChat(id: string): Promise<ServerChatSession> {
     return this.request<ServerChatSession>(`/chats/${id}/pin`, {
       method: 'PATCH',
     })
   }
 
-  // 删除会话
   async deleteChat(id: string): Promise<void> {
     await this.request<unknown>(`/chats/${id}`, { method: 'DELETE' })
   }
 
-  // 获取会话消息
   async getMessages(chatId: string): Promise<ServerMessage[]> {
     return this.request<ServerMessage[]>(`/chats/${chatId}/messages`)
   }
@@ -106,9 +142,11 @@ export class HttpClient {
     })
   }
 
-  // 获取知识库文档列表
-  async getDocuments(): Promise<KnowledgeDocument[]> {
-    return this.request<KnowledgeDocument[]>('/knowledge/documents')
+  // ===== 知识库 =====
+
+  // 获取知识库文档列表（分页）
+  async getDocuments(page = 1, pageSize = 20): Promise<KnowledgePage> {
+    return this.request<KnowledgePage>(`/knowledge/documents?page=${page}&pageSize=${pageSize}`)
   }
 
   // 上传文档到知识库（自动切块 + 向量化）
@@ -132,10 +170,142 @@ export class HttpClient {
     await this.request<unknown>(`/knowledge/documents/${id}`, { method: 'DELETE' })
   }
 
-  // 探测后端是否在线
+  // 重新索引文档（用存储的原始文件重新切块/向量化）
+  async reindexDocument(id: string): Promise<KnowledgeDocument> {
+    return this.request<KnowledgeDocument>(`/knowledge/documents/${id}/reindex`, {
+      method: 'POST',
+    })
+  }
+
+  // 查看文档切块预览
+  async getDocumentChunks(
+    id: string,
+  ): Promise<{ documentId: string; chunks: { id: string; index: number; content: string }[] }> {
+    return this.request(`/knowledge/documents/${id}/chunks`)
+  }
+
+  // 语义检索预览（返回命中的片段与分数）
+  async searchKnowledge(q: string, topK = 4): Promise<{ success: boolean; data: KnowledgeHit[] }> {
+    return this.request(`/knowledge/search?q=${encodeURIComponent(q)}&topK=${topK}`)
+  }
+
+  // ===== 提示词 =====
+
+  async getPrompts(): Promise<Prompt[]> {
+    return this.request<Prompt[]>('/prompts')
+  }
+
+  async createPrompt(data: {
+    name: string
+    category: string
+    description?: string
+    content: string
+  }): Promise<Prompt> {
+    return this.request<Prompt>('/prompts', { method: 'POST', body: JSON.stringify(data) })
+  }
+
+  async updatePrompt(
+    id: string,
+    data: { name?: string; category?: string; description?: string; content?: string },
+  ): Promise<Prompt> {
+    return this.request<Prompt>(`/prompts/${id}`, { method: 'PATCH', body: JSON.stringify(data) })
+  }
+
+  async deletePrompt(id: string): Promise<void> {
+    await this.request<unknown>(`/prompts/${id}`, { method: 'DELETE' })
+  }
+
+  // ===== 设置 =====
+
+  async getSettings(): Promise<{ success: boolean; data: SettingsItem[] }> {
+    return this.request('/settings')
+  }
+
+  async updateSettings(
+    patch: Record<string, string | number | null>,
+  ): Promise<{ success: boolean }> {
+    return this.request<{ success: boolean }>('/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    })
+  }
+
+  // ===== Agent 任务 =====
+
+  async getTasks(): Promise<AgentTask[]> {
+    return this.request<AgentTask[]>('/tasks')
+  }
+
+  async createTask(prompt: string): Promise<AgentTask> {
+    return this.request<AgentTask>('/tasks', {
+      method: 'POST',
+      body: JSON.stringify({ prompt }),
+    })
+  }
+
+  async runTask(id: string): Promise<AgentTask> {
+    return this.request<AgentTask>(`/tasks/${id}/run`, { method: 'POST' })
+  }
+
+  async deleteTask(id: string): Promise<void> {
+    await this.request<unknown>(`/tasks/${id}`, { method: 'DELETE' })
+  }
+
+  // ===== 企业工单助手 =====
+
+  async getTickets(status?: string): Promise<SupportTicket[]> {
+    const query = status ? `?status=${encodeURIComponent(status)}` : ''
+    return this.request<SupportTicket[]>(`/tickets${query}`)
+  }
+
+  async getTicket(id: string): Promise<SupportTicket> {
+    return this.request<SupportTicket>(`/tickets/${id}`)
+  }
+
+  async createTicket(data: {
+    externalRef?: string
+    title: string
+    description: string
+    customerName: string
+    customerEmail?: string
+    priority?: TicketPriority
+  }): Promise<SupportTicket> {
+    return this.request<SupportTicket>('/tickets', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async generateTicketSuggestion(id: string) {
+    return this.request(`/tickets/${id}/generate-suggestion`, { method: 'POST' })
+  }
+
+  async decideTicketSuggestion(
+    ticketId: string,
+    suggestionId: string,
+    data: { approved: boolean; content?: string; note?: string },
+  ): Promise<SupportTicket> {
+    return this.request<SupportTicket>(
+      `/tickets/${ticketId}/suggestions/${suggestionId}/decision`,
+      { method: 'POST', body: JSON.stringify(data) },
+    )
+  }
+
+  // ===== HITL 工具审批 =====
+
+  async approveToolCall(chatId: string, toolCallId: string, approved: boolean): Promise<void> {
+    await this.request<unknown>(`/chats/${chatId}/tools/approval`, {
+      method: 'POST',
+      body: JSON.stringify({ toolCallId, approved }),
+    })
+  }
+
+  // 探测后端是否在线：任何 HTTP 响应（含 401）都说明服务在线，只有网络错误才视为离线
   async ping(): Promise<boolean> {
     try {
-      await this.request<unknown>('/chats')
+      await fetch(`${this.baseUrl}/health`, {
+        signal: AbortSignal.timeout(5000),
+      })
       return true
     } catch {
       return false

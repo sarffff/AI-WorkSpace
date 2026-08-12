@@ -63,9 +63,22 @@ export class ChatController {
     return this.chatService.getMessages(userId, id)
   }
 
+  // ===== HITL 工具审批 =====
+
+  // 用户确认/拒绝某次待审批的工具调用（approve: true 放行）
+  @Post(':id/tools/approval')
+  async resolveToolApproval(
+    @UserId() userId: string,
+    @Param('id') id: string,
+    @Body() body: { toolCallId: string; approved: boolean },
+  ) {
+    await this.chatService.assertOwned(userId, id)
+    return this.chatService.resolveApproval(userId, body.toolCallId, body.approved)
+  }
+
   // ===== AI 对话 =====
 
-  // 非流式对话（一次返回完整响应）
+  // 非流式对话（一次返回完整响应，附带引用来源）
   @Post(':id/completions')
   async completions(
     @UserId() userId: string,
@@ -73,11 +86,17 @@ export class ChatController {
     @Body() body: { prompt: string; model?: string; useRag?: boolean },
   ) {
     await this.chatService.assertOwned(userId, id)
-    const data = await this.chatService.generateAiResponse(id, body.prompt, body.model, body.useRag)
-    return { success: true, data }
+    const result = await this.chatService.generateAiResponse(
+      id,
+      userId,
+      body.prompt,
+      body.model,
+      body.useRag,
+    )
+    return { success: true, ...result }
   }
 
-  // 流式对话（SSE），逐 token 推送
+  // 流式对话（SSE），逐 token 推送；结束时先发 sources 再发 done
   @Post(':id/completions/stream')
   @Header('Cache-Control', 'no-cache')
   async streamCompletions(
@@ -92,13 +111,28 @@ export class ChatController {
 
     try {
       await this.chatService.assertOwned(userId, id)
-      for await (const chunk of this.chatService.streamAiResponse(
+      for await (const event of this.chatService.streamAiResponse(
         id,
+        userId,
         body.prompt,
         body.model,
         body.useRag,
       )) {
-        res.write(`data: ${JSON.stringify({ content: chunk })}\n\n`)
+        if (event.content) {
+          res.write(`data: ${JSON.stringify({ content: event.content })}\n\n`)
+        }
+        if (event.sources) {
+          res.write(`data: ${JSON.stringify({ sources: event.sources })}\n\n`)
+        }
+        if (event.toolCall) {
+          res.write(`data: ${JSON.stringify({ toolCall: event.toolCall })}\n\n`)
+        }
+        if (event.toolResult) {
+          res.write(`data: ${JSON.stringify({ toolResult: event.toolResult })}\n\n`)
+        }
+        if (event.approval) {
+          res.write(`data: ${JSON.stringify({ approval: event.approval })}\n\n`)
+        }
       }
       res.write(`data: ${JSON.stringify({ done: true })}\n\n`)
     } catch (err) {

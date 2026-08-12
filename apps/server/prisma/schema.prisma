@@ -8,14 +8,19 @@ generator client {
 }
 
 model User {
-  id        String   @id @default(uuid())
-  email     String   @unique
-  name      String?
-  password  String
-  avatar    String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  chats     Chat[]
+  id                  String             @id @default(uuid())
+  email               String             @unique
+  name                String?
+  password            String
+  avatar              String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  chats               Chat[]
+  tasks               Task[]
+  documents           Document[]
+  tickets             SupportTicket[]
+  approvedSuggestions TicketSuggestion[] @relation("SuggestionApprover")
+  ticketAuditEvents   TicketAuditEvent[]
 }
 
 model Chat {
@@ -32,21 +37,28 @@ model Chat {
 model Message {
   id        String   @id @default(uuid())
   content   String   @db.Text
-  role      String   // user, assistant, system
+  role      String // user, assistant, system
   model     String?
+  sources   Json? // 回答引用来源：[{ documentId, documentName }]
+  tools     Json? // agent 工具调用记录：[{ id, name, args, output, status }]
   chatId    String
   chat      Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
 }
 
 model Document {
-  id        String          @id @default(uuid())
+  id        String           @id @default(uuid())
   name      String
   size      Int
-  chunks    Int             @default(0)
-  status    String          @default("indexed") // indexed, processing, failed
-  createdAt DateTime        @default(now())
+  chunks    Int              @default(0)
+  status    String           @default("indexed") // indexed, processing, failed
+  fileBytes Bytes? // 原始文件内容，用于重新索引
+  ownerId   String?
+  owner     User?            @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  createdAt DateTime         @default(now())
   chunkList KnowledgeChunk[]
+
+  @@index([ownerId])
 }
 
 model KnowledgeChunk {
@@ -59,4 +71,106 @@ model KnowledgeChunk {
   createdAt  DateTime @default(now())
 
   @@index([documentId])
+}
+
+model Prompt {
+  id          String   @id @default(uuid())
+  name        String
+  category    String
+  description String?
+  content     String   @db.Text // 可放入 system 的提示词正文
+  preset      Boolean  @default(false) // 内置预设，不可删除
+  createdBy   String? // 自定义提示词的创建者；为空表示内置
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Setting {
+  key       String   @id
+  value     String   @db.Text
+  updatedAt DateTime @updatedAt
+}
+
+model Task {
+  id        String     @id @default(uuid())
+  title     String
+  prompt    String     @db.Text
+  status    String     @default("queued") // queued, running, succeeded, failed
+  error     String?    @db.Text
+  result    String?    @db.Text
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  steps     TaskStep[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+}
+
+model TaskStep {
+  id        String   @id @default(uuid())
+  taskId    String
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  order     Int
+  title     String
+  status    String   @default("pending") // pending, running, succeeded, failed
+  output    String?  @db.Text
+  error     String?  @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([taskId])
+}
+
+model SupportTicket {
+  id            String             @id @default(uuid())
+  externalRef   String?
+  title         String
+  description   String             @db.Text
+  customerName  String
+  customerEmail String?
+  priority      String             @default("medium") // low, medium, high, urgent
+  status        String             @default("open") // open, analyzing, pending_approval, resolved, closed
+  finalReply    String?            @db.Text
+  repliedAt     DateTime?
+  createdById   String
+  createdBy     User               @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  suggestions   TicketSuggestion[]
+  auditEvents   TicketAuditEvent[]
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  @@index([createdById, status])
+  @@index([createdAt])
+}
+
+model TicketSuggestion {
+  id           String        @id @default(uuid())
+  ticketId     String
+  ticket       SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  version      Int
+  status       String        @default("pending") // pending, approved, rejected
+  summary      String        @db.Text
+  reply        String        @db.Text
+  sources      Json?
+  model        String?
+  approvedById String?
+  approvedBy   User?         @relation("SuggestionApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  decisionNote String?       @db.Text
+  decidedAt    DateTime?
+  createdAt    DateTime      @default(now())
+
+  @@unique([ticketId, version])
+  @@index([ticketId, status])
+}
+
+model TicketAuditEvent {
+  id        String        @id @default(uuid())
+  ticketId  String
+  ticket    SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  actorId   String?
+  actor     User?         @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action    String
+  metadata  Json?
+  createdAt DateTime      @default(now())
+
+  @@index([ticketId, createdAt])
 }
