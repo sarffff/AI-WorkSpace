@@ -1,78 +1,124 @@
-import React, { useEffect } from 'react'
-import { useSelector, useDispatch } from 'react-redux'
-import { RootState } from '@/app/providers/store'
-import { setSelectedModel, setServerStatus } from '@/entities/chat/model/chatSlice'
-import { HttpClient } from '@ai-workspace/sdk'
-import { ChevronDown, ShieldCheck } from 'lucide-react'
-
-const api = new HttpClient('http://localhost:3000')
+import React, { useEffect, useState } from 'react'
+import { useDispatch, useSelector } from 'react-redux'
+import { RootState, AppDispatch } from '@/app/providers/store'
+import { setSelectedModel, setActiveTab, setServerStatus } from '@/entities/chat/model/chatSlice'
+import { logoutUser } from '@/entities/auth/model/authSlice'
+import { Sun, Moon, LogOut, Settings, Bot } from 'lucide-react'
+import { useI18n } from '@/entities/i18n/model/useI18n'
+import { useTheme } from '@/entities/theme/model/themeContext'
 
 export const Header: React.FC = () => {
-  const dispatch = useDispatch()
-  const { selectedModel, activeTab, serverStatus, sessions } = useSelector(
-    (state: RootState) => state.chat,
-  )
-  const [appVersion] = React.useState<string>('0.1.0')
+  const dispatch = useDispatch<AppDispatch>()
+  const { t } = useI18n()
+  const { mode, toggleTheme } = useTheme()
+  const isDark = mode === 'dark'
+  const selectedModel = useSelector((state: RootState) => state.chat.selectedModel)
+  const models = useSelector((state: RootState) => state.chat.models)
+  const currentChatId = useSelector((state: RootState) => state.chat.currentChatId)
+  const messagesBySession = useSelector((state: RootState) => state.chat.messagesBySession)
+  const [serverState, setServerState] = useState<'checking' | 'online' | 'offline'>('checking')
+
+  const lastMsg = currentChatId
+    ? (messagesBySession[currentChatId] || []).filter((m) => m.role === 'user').at(-1)
+    : null
+
+  const sessionTitle = lastMsg
+    ? lastMsg.content?.slice(0, 48) || t('chat.selectConv')
+    : t('chat.selectConv')
 
   useEffect(() => {
-    api.ping().then((online) => {
-      dispatch(setServerStatus(online ? 'online' : 'offline'))
-    })
+    const checkHealth = async () => {
+      try {
+        const res = await fetch('http://localhost:3000/health', {
+          signal: AbortSignal.timeout(2500),
+        })
+        setServerState(res.ok ? 'online' : 'offline')
+        void dispatch(setServerStatus(res.ok ? 'online' : 'offline'))
+      } catch {
+        setServerState('offline')
+        void dispatch(setServerStatus('offline'))
+      }
+    }
+    checkHealth()
+    const id = setInterval(checkHealth, 30000)
+    return () => clearInterval(id)
   }, [dispatch])
 
-  const models = ['glm-4.5-air', 'gpt-6', 'Claude-Opus-5', 'DeepSeek-V4', 'Gemini-3.5-Pro']
-
-  const titles: Record<string, string> = {
-    chat: 'AI Workspace Assistant',
-    knowledge: 'Knowledge Base & RAG',
-    prompts: 'Prompt Engineering Hub',
-    settings: 'Application Settings',
-  }
-
-  const statusColor =
-    serverStatus === 'online'
-      ? 'text-emerald-400'
-      : serverStatus === 'offline'
-        ? 'text-red-400'
-        : 'text-yellow-400'
-  const statusLabel =
-    serverStatus === 'online'
-      ? `Online (${sessions.length} chats)`
-      : serverStatus === 'offline'
-        ? 'Offline'
-        : 'Checking...'
-
   return (
-    <header className="h-14 border-b border-slate-800/80 bg-slate-900/40 backdrop-blur px-6 flex items-center justify-between select-none">
-      <div className="flex items-center gap-3">
-        <h2 className="text-sm font-semibold text-slate-100">{titles[activeTab] || 'Dashboard'}</h2>
-        <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-medium">
-          v{appVersion}
-        </span>
+    <header
+      className="flex items-center justify-between px-4 py-2.5 shrink-0"
+      style={{ background: 'var(--bg-panel)', borderBottom: '1px solid var(--border)' }}
+    >
+      <div className="flex items-center gap-3 min-w-0">
+        <div
+          className="w-2 h-2 rounded-full shrink-0 transition-colors"
+          style={{
+            background: serverState === 'online' ? 'var(--accent-emerald)' : 'var(--accent-red)',
+            boxShadow: `0 0 8px ${serverState === 'online' ? 'rgba(34,197,94,.6)' : 'rgba(239,68,68,.6)'}`,
+          }}
+        />
+        <h1 className="text-sm font-semibold truncate" style={{ color: 'var(--text-main)' }}>
+          {sessionTitle}
+        </h1>
       </div>
 
-      <div className="flex items-center gap-4">
-        <div className="relative group">
+      <div className="flex items-center gap-2">
+        {/* Theme toggle */}
+        <button
+          onClick={toggleTheme}
+          title={isDark ? t('chat.ragOn') : t('chat.ragOff')}
+          className="p-1.5 rounded-lg transition-all hover:bg-white/5"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          {isDark ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
+        </button>
+
+        {/* Model pill */}
+        <div
+          className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-mono cursor-pointer transition-all hover:opacity-80"
+          style={{
+            background: 'var(--input-bg)',
+            color: 'var(--text-muted)',
+            border: '1px solid var(--border-soft)',
+          }}
+        >
+          <Bot className="w-3.5 h-3.5" style={{ color: 'var(--accent-cyan)' }} />
           <select
             value={selectedModel}
             onChange={(e) => dispatch(setSelectedModel(e.target.value))}
-            className="appearance-none bg-slate-800/80 hover:bg-slate-800 text-slate-200 text-xs rounded-lg px-3 py-1.5 pr-8 border border-slate-700/60 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer font-medium transition-all"
+            className="bg-transparent focus:outline-none appearance-none cursor-pointer"
+            style={{ color: 'var(--text-main)' }}
           >
-            {models.map((m) => (
-              <option key={m} value={m} className="bg-slate-900 text-slate-200">
+            {models.map((m: string) => (
+              <option
+                key={m}
+                value={m}
+                style={{ background: 'var(--bg-panel)', color: 'var(--text-main)' }}
+              >
                 {m}
               </option>
             ))}
           </select>
-          <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
         </div>
 
-        <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-slate-950/40 border border-slate-800/60 text-[11px] text-slate-300">
-          <ShieldCheck className={`w-3.5 h-3.5 ${statusColor}`} />
-          <span>
-            Server: <strong className={`${statusColor} font-medium`}>{statusLabel}</strong>
-          </span>
-        </div>
+        <div className="w-px h-5" style={{ background: 'var(--border-soft)' }} />
+
+        <button
+          onClick={() => dispatch(setActiveTab('settings'))}
+          className="p-2 rounded-lg transition-all hover:bg-white/5"
+          style={{ color: 'var(--text-dim)' }}
+        >
+          <Settings className="w-4 h-4" />
+        </button>
+
+        <button
+          onClick={() => dispatch(logoutUser())}
+          title={t('header.logout')}
+          className="p-2 rounded-lg transition-all hover:bg-red-500/10"
+          style={{ color: 'var(--text-dim)' }}
+        >
+          <LogOut className="w-4 h-4" />
+        </button>
       </div>
     </header>
   )

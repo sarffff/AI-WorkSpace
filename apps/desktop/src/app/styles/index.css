@@ -1,30 +1,206 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* ─── Dark theme (default) ────────────────────────────────────────── */
+:root {
+  --bg-void: #050810;
+  --bg-surface: #0c1220;
+  --bg-panel: #0f1729;
+  --bg-elevated: #141d2f;
+  --border: rgba(255, 255, 255, 0.07);
+  --border-soft: rgba(255, 255, 255, 0.04);
+  --text-main: #f0f4ff;
+  --text-muted: #94a3b8;
+  --text-dim: #64748b;
+  --accent-cyan: #22d3ee;
+  --accent-amber: #f59e0b;
+  --glow-cyan: rgba(34, 211, 238, 0.2);
+  --glow-amber: rgba(251, 191, 36, 0.15);
+  --input-bg: rgba(255, 255, 255, 0.04);
+  --dot-color: rgba(255, 255, 255, 0.05);
+  --scrollbar: rgba(255, 255, 255, 0.08);
+  --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.5);
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+.ticket-input {
+  width: 100%;
+  border-radius: 0.75rem;
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  color: var(--text-main);
+  padding: 0.75rem 0.875rem;
+  font-size: 0.875rem;
+  outline: none;
+}
+
+.ticket-input:focus {
+  border-color: rgba(245, 158, 11, 0.55);
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.08);
+}
+
+.ticket-layout {
+  grid-template-columns: 320px minmax(0, 1fr);
+}
+
+@media (max-width: 900px) {
+  .ticket-layout {
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+
+  .ticket-layout > aside {
+    max-height: 240px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .ticket-layout > main {
+    overflow: visible;
+  }
+}
+
+/* ─── Light theme ─────────────────────────────────────────────────── */
+[data-theme='light'] {
+  --bg-void: #f1f5f9;
+  --bg-surface: #ffffff;
+  --bg-panel: #f8fafc;
+  --bg-elevated: #f1f5f9;
+  --border: rgba(0, 0, 0, 0.1);
+  --border-soft: rgba(0, 0, 0, 0.06);
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+  --text-dim: #94a3b8;
+  --accent-cyan: #0891b2;
+  --accent-amber: #d97706;
+  --accent-emerald: #16a34a;
+  --accent-red: #dc2626;
+  --glow-cyan: rgba(8, 145, 178, 0.12);
+  --glow-amber: rgba(217, 119, 6, 0.1);
+  --input-bg: rgba(0, 0, 0, 0.04);
+  --dot-color: rgba(0, 0, 0, 0.06);
+  --scrollbar: rgba(0, 0, 0, 0.12);
+  --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.08);
+}
+
+/* ─── Base ──────────────────────────────────────────────────────────── */
 body {
   margin: 0;
-  background-color: #090d16;
-  color: #f3f4f6;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background-color: var(--bg-void);
+  color: var(--text-main);
+  font-family: var(--font-sans);
   user-select: none;
   overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition:
+    background-color 0.25s ease,
+    color 0.25s ease;
 }
 
+/* ─── Noise overlay ─────────────────────────────────────────────── */
+.noise-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0.028;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 256px 256px;
+}
+
+/* ─── Dot-grid ──────────────────────────────────────────────────── */
+.dot-grid-bg {
+  background-image: radial-gradient(circle, var(--dot-color) 1px, transparent 1px);
+  background-size: 20px 20px;
+  transition: background-image 0.25s ease;
+}
+
+/* ─── Custom scrollbar ──────────────────────────────────────────── */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
-
 ::-webkit-scrollbar-track {
   background: transparent;
 }
-
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 3px;
+  background: var(--scrollbar);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+[data-theme='light'] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.2);
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+/* ─── Selection ─────────────────────────────────────────────────── */
+::selection {
+  background: var(--glow-cyan);
+  color: var(--text-main);
+}
+
+/* ─── Animation: agent pulse ring ───────────────────────────────── */
+@keyframes pulse-ring {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(34, 211, 238, 0);
+  }
+}
+.animate-agent-ring {
+  animation: pulse-ring 2.4s ease-in-out infinite;
+}
+
+/* ─── Shimmer thinking state ────────────────────────────────────── */
+@keyframes shimmer {
+  0% {
+    background-position: 200% center;
+  }
+  100% {
+    background-position: -200% center;
+  }
+}
+.text-shimmer {
+  background: linear-gradient(90deg, #94a3b8 40%, #22d3ee 50%, #94a3b8 60%);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 3s linear infinite;
+}
+
+/* ─── Fade-in on mount ──────────────────────────────────────────── */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.fade-up {
+  animation: fade-up 0.35s ease both;
+}
+.fade-up-delay-1 {
+  animation-delay: 0.06s;
+}
+.fade-up-delay-2 {
+  animation-delay: 0.12s;
+}
+.fade-up-delay-3 {
+  animation-delay: 0.18s;
+}
+.fade-up-delay-4 {
+  animation-delay: 0.24s;
 }
