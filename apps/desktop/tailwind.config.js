@@ -5,9 +5,28 @@ export default {
   theme: {
     extend: {
       colors: {
-        background: '#090d16',
-        card: '#111827',
-        border: '#1f2937',
+        background: '#070a12',
+        // 语义色：由 CSS 变量驱动，随 dark/light 主题切换
+        s0: 'var(--surface-0)',
+        s1: 'var(--surface-1)',
+        s2: 'var(--surface-2)',
+        s3: 'var(--surface-3)',
+        s4: 'var(--surface-4)',
+        line: 'var(--line)',
+        linestrong: 'var(--line-strong)',
+        t1: 'var(--text-1)',
+        t2: 'var(--text-2)',
+        t3: 'var(--text-3)',
+        t4: 'var(--text-4)',
+        brand: 'var(--brand)',
+        'brand-strong': 'var(--brand-strong)',
+        'brand-on': 'var(--brand-on)',
+        signal: 'var(--signal)',
+      },
+      fontFamily: {
+        sans: ['Manrope', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'sans-serif'],
+        display: ['Sora', 'Manrope', 'PingFang SC', 'Microsoft YaHei', 'sans-serif'],
+        mono: ['JetBrains Mono', 'Cascadia Code', 'Consolas', 'monospace'],
       },
     },
   },

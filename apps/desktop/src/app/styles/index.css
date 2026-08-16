@@ -2,13 +2,113 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================
+   AI Workspace · Operations Deck 设计底座（dark / light 双主题）
+   Dark  = 深墨青机身 / 霓虹绿遥测 / 琥珀信号灯
+   Light = 控制室纸白 / 墨绿主色 / 琥珀信号保留
+   语义色通过 CSS 变量驱动，组件统一使用语义类
+   ============================================================ */
+
+:root,
+:root.dark {
+  color-scheme: dark;
+
+  --surface-0: #070a12; /* 机身底色 */
+  --surface-1: rgba(10, 15, 28, 0.85); /* 侧边栏/容器 */
+  --surface-2: rgba(15, 22, 38, 0.72); /* 卡片面板 */
+  --surface-3: rgba(30, 41, 59, 0.55); /* 悬停/输入内衬 */
+  --surface-4: rgba(2, 6, 15, 0.7); /* 深陷槽（代码槽/只读槽） */
+
+  --line: rgba(30, 41, 59, 0.65); /* 默认描边 */
+  --line-strong: rgba(51, 65, 85, 0.75); /* 强调描边 */
+
+  --text-1: #f1f5f9; /* 主文字 */
+  --text-2: #94a3b8; /* 次级文字 */
+  --text-3: #64748b; /* 弱文字 */
+  --text-4: #475569; /* 装饰/注释 */
+
+  --brand: #34d399; /* 品牌主色（亮） */
+  --brand-strong: #10b981; /* 品牌实底 */
+  --brand-deep: #047857;
+  --brand-on: #04231b; /* 品牌实底上的文字 */
+
+  --signal: #fbbf24; /* 琥珀信号 */
+
+  --grid-line: rgba(148, 163, 184, 0.055);
+  --glow-a: rgba(52, 211, 153, 0.09);
+  --glow-b: rgba(251, 191, 36, 0.05);
+  --glow-c: rgba(56, 189, 248, 0.04);
+  --noise-opacity: 0.028;
+  --noise-blend: overlay;
+
+  --brand-glow: rgba(52, 211, 153, 0.45);
+  --brand-ring: rgba(52, 211, 153, 0.15);
+  --shadow-card: 0 10px 30px -12px rgba(0, 0, 0, 0.6);
+}
+
+:root.light {
+  color-scheme: light;
+
+  --surface-0: #f4f6f5; /* 纸白机身 */
+  --surface-1: rgba(255, 255, 255, 0.88);
+  --surface-2: rgba(255, 255, 255, 0.92);
+  --surface-3: rgba(2, 44, 34, 0.055);
+  --surface-4: rgba(2, 44, 34, 0.035);
+
+  --line: rgba(15, 42, 34, 0.12);
+  --line-strong: rgba(15, 42, 34, 0.2);
+
+  --text-1: #0c1a14; /* 墨绿黑 */
+  --text-2: #43554d;
+  --text-3: #6e7f77;
+  --text-4: #93a29a;
+
+  --brand: #059669; /* 加深的主色，保证浅底对比度 */
+  --brand-strong: #10b981;
+  --brand-deep: #047857;
+  --brand-on: #04231b;
+
+  --signal: #d97706;
+
+  --grid-line: rgba(12, 60, 45, 0.06);
+  --glow-a: rgba(5, 150, 105, 0.08);
+  --glow-b: rgba(217, 119, 6, 0.05);
+  --glow-c: rgba(14, 116, 144, 0.05);
+  --noise-opacity: 0.035;
+  --noise-blend: multiply;
+
+  --brand-glow: rgba(5, 150, 105, 0.35);
+  --brand-ring: rgba(5, 150, 105, 0.18);
+  --shadow-card: 0 10px 24px -14px rgba(12, 42, 32, 0.25);
+}
+
 body {
   margin: 0;
-  background-color: #090d16;
-  color: #f3f4f6;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background-color: var(--surface-0);
+  color: var(--text-2);
+  font-family: 'Manrope', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  font-feature-settings:
+    'ss01' on,
+    'cv05' on;
   user-select: none;
   overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-display {
+  font-family: 'Sora', 'Manrope', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+.font-mono,
+code,
+pre,
+kbd {
+  font-family: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+}
+
+::selection {
+  background: var(--brand-ring);
+  color: var(--text-1);
 }
 
 ::-webkit-scrollbar {
@@ -21,10 +121,259 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--line-strong);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--text-3);
+}
+
+/* ---------- 氛围层：蓝图网格 + 遥测辉光 + 颗粒噪点 ---------- */
+
+.bg-blueprint {
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 36px 36px;
+  mask-image: radial-gradient(ellipse 90% 80% at 50% 0%, black 30%, transparent 78%);
+  -webkit-mask-image: radial-gradient(ellipse 90% 80% at 50% 0%, black 30%, transparent 78%);
+}
+
+.glow-field {
+  background:
+    radial-gradient(ellipse 55% 42% at 18% -8%, var(--glow-a), transparent 70%),
+    radial-gradient(ellipse 42% 36% at 88% -12%, var(--glow-b), transparent 70%),
+    radial-gradient(ellipse 60% 40% at 55% 112%, var(--glow-c), transparent 70%);
+}
+
+.noise-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 60;
+  opacity: var(--noise-opacity);
+  mix-blend-mode: var(--noise-blend);
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ---------- 入场动效：编排式 stagger reveal ---------- */
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.rise-in {
+  opacity: 0;
+  animation: rise-in 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.fade-in {
+  animation: fade-in 0.4s ease forwards;
+}
+
+/* ---------- 遥测元素：呼吸灯 / 流式光标 / 扫掠进度 ---------- */
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 8px 2px var(--brand-glow);
+  }
+  50% {
+    opacity: 0.45;
+    box-shadow: 0 0 2px 0 rgba(0, 0, 0, 0);
+  }
+}
+
+.pulse-dot {
+  animation: pulse-dot 1.8s ease-in-out infinite;
+}
+
+@keyframes pulse-dot-red {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 8px 2px rgba(251, 113, 133, 0.45);
+  }
+  50% {
+    opacity: 0.45;
+    box-shadow: 0 0 2px 0 rgba(0, 0, 0, 0);
+  }
+}
+
+.pulse-dot-red {
+  animation: pulse-dot-red 1.4s ease-in-out infinite;
+}
+
+/* 流式输出时跟随文本末尾的光标方块 */
+@keyframes cursor-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.stream-cursor {
+  display: inline-block;
+  width: 7px;
+  height: 15px;
+  margin-left: 3px;
+  border-radius: 2px;
+  background: var(--brand);
+  box-shadow: 0 0 10px var(--brand-glow);
+  animation: cursor-blink 0.85s steps(1) infinite;
+  vertical-align: text-bottom;
+}
+
+/* 思考中的三点起伏 */
+@keyframes dot-wave {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+.thinking-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 9999px;
+  background: var(--brand);
+  animation: dot-wave 1.1s ease-in-out infinite;
+}
+
+/* 生成中的细扫掠条 */
+@keyframes scanline {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+
+.scanline {
+  position: relative;
+  overflow: hidden;
+}
+
+.scanline::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, var(--brand-glow), transparent);
+  opacity: 0.5;
+  animation: scanline 1.6s linear infinite;
+}
+
+/* 卡片悬浮时的信号描边 */
+.card-hover {
+  transition:
+    border-color 0.25s ease,
+    box-shadow 0.25s ease,
+    transform 0.25s ease,
+    background-color 0.25s ease;
+}
+
+.card-hover:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--brand) 40%, transparent);
+  box-shadow:
+    var(--shadow-card),
+    0 0 0 1px var(--brand-ring);
+}
+
+/* 面板统一质感 */
+.panel {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(8px);
+}
+
+/* 遥测标签的切角徽章感 */
+.tag-telemetry {
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* 主题切换的全局过渡（仅颜色属性） */
+body,
+.panel,
+button,
+input,
+textarea,
+select,
+header,
+aside,
+main {
+  transition-property: background-color, border-color, color, box-shadow;
+  transition-duration: 0.25s;
+  transition-timing-function: ease;
+}
+
+/* Markdown 表格适配 */
+.md-body table {
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+  font-size: 12px;
+  width: 100%;
+}
+
+.md-body th,
+.md-body td {
+  border: 1px solid var(--line-strong);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.md-body th {
+  background: var(--surface-3);
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+/* 第三方登录按钮的分隔线文字 */
+.divider-label {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--text-4);
+  font-size: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0.1em;
+}
+
+.divider-label::before,
+.divider-label::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--line);
 }

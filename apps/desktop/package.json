@@ -14,6 +14,9 @@
   },
   "dependencies": {
     "@ai-workspace/sdk": "workspace:*",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/manrope": "^5.3.0",
+    "@fontsource/sora": "^5.3.0",
     "@reduxjs/toolkit": "^2.2.6",
     "@tanstack/react-query": "^5.51.1",
     "class-variance-authority": "^0.7.0",
@@ -22,7 +25,10 @@
     "lucide-react": "^0.408.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
     "react-redux": "^9.1.2",
+    "react-syntax-highlighter": "^16.1.1",
+    "remark-gfm": "^4.0.1",
     "tailwind-merge": "^2.4.0",
     "tailwindcss-animate": "^1.0.7"
   },
@@ -30,6 +36,7 @@
     "@types/node": "^20.14.10",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@types/react-syntax-highlighter": "^15.5.13",
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.19",
     "electron": "^31.2.0",
