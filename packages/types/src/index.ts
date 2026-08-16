@@ -1,4 +1,23 @@
-// ===== 会话管理 =====
+// ===== 应用配置 =====
+export interface AppSettings {
+  llmBaseUrl: string
+  llmApiKey: string
+  llmModel: string
+}
+
+// ===== 认证 =====
+export interface AuthUser {
+  id: string
+  email: string
+  name: string | null
+  avatar: string | null
+}
+
+export interface AuthResponse {
+  token: string
+  user: AuthUser
+}
+
 export interface ChatSession {
   id: string
   title: string

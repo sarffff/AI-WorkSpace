@@ -1,21 +1,20 @@
 import { Injectable, NotFoundException } from '@nestjs/common'
 import { PrismaService } from '@/prisma/prisma.service'
+import { SettingsService } from '@/modules/settings/settings.service'
 import OpenAI from 'openai'
-import { ConfigService } from '@nestjs/config'
 
 @Injectable()
 export class ChatService {
-  private openai: OpenAI
-
   constructor(
     private prisma: PrismaService,
-    private configService: ConfigService,
-  ) {
-    this.openai = new OpenAI({
-      baseURL:
-        this.configService.get<string>('LLM_BASE_URL') || 'https://open.bigmodel.cn/api/paas/v4/',
-      apiKey: this.configService.get<string>('LLM_API_KEY'),
-    })
+    private settingsService: SettingsService,
+  ) {}
+
+  // 根据当前 DB 配置动态创建 OpenAI 客户端
+  private async getOpenAIClient(): Promise<OpenAI> {
+    const baseURL = await this.settingsService.get('llmBaseUrl')
+    const apiKey = await this.settingsService.get('llmApiKey')
+    return new OpenAI({ baseURL, apiKey })
   }
 
   // ===== 会话 CRUD =====
@@ -90,26 +89,53 @@ export class ChatService {
     })
   }
 
-  // 非流式：保存消息 → 调 AI → 保存回复 → 返回
-  async generateAiResponse(chatId: string, prompt: string, model = 'gpt-6') {
+  // 构建完整的消息历史数组（含当前用户消息）
+  private async buildMessages(
+    chatId: string,
+    prompt: string,
+  ): Promise<OpenAI.Chat.ChatCompletionMessageParam[]> {
+    const history = await this.prisma.message.findMany({
+      where: { chatId },
+      orderBy: { createdAt: 'asc' },
+    })
+    return [
+      ...history.map((m) => ({
+        role: m.role as 'user' | 'assistant' | 'system',
+        content: m.content,
+      })),
+      { role: 'user' as const, content: prompt },
+    ]
+  }
+
+  // 非流式：保存消息 → 调 AI（含历史） → 保存回复 → 返回
+  async generateAiResponse(chatId: string, prompt: string, model?: string) {
+    const messages = await this.buildMessages(chatId, prompt)
     await this.saveUserMessage(chatId, prompt)
-    const completion = await this.openai.chat.completions.create({
-      model: model || this.configService.get<string>('LLM_MODEL') || 'GLM-4-Flash',
-      messages: [{ role: 'user', content: prompt }],
+
+    const openai = await this.getOpenAIClient()
+    const resolvedModel = model || (await this.settingsService.get('llmModel'))
+    const completion = await openai.chat.completions.create({
+      model: resolvedModel,
+      messages,
     })
     const reply = completion.choices[0]?.message?.content || ''
-    await this.saveAiMessage(chatId, reply, model)
+    await this.saveAiMessage(chatId, reply, resolvedModel)
     return reply
   }
 
-  // 流式：保存用户消息 → 流式调 AI → 逐 token 返回 → 结束后保存完整回复
+  // 流式：保存用户消息 → 流式调 AI（含历史） → 逐 token 返回 → 结束后保存完整回复
   async *streamAiResponse(chatId: string, prompt: string, model?: string): AsyncGenerator<string> {
+    const messages = await this.buildMessages(chatId, prompt)
     await this.saveUserMessage(chatId, prompt)
-    const stream = await this.openai.chat.completions.create({
-      model: model || this.configService.get<string>('LLM_MODEL') || 'GLM-4-Flash',
-      messages: [{ role: 'user', content: prompt }],
+
+    const openai = await this.getOpenAIClient()
+    const resolvedModel = model || (await this.settingsService.get('llmModel'))
+    const stream = await openai.chat.completions.create({
+      model: resolvedModel,
+      messages,
       stream: true,
     })
+
     let fullReply = ''
     for await (const chunk of stream) {
       const content = chunk.choices[0]?.delta?.content || ''
@@ -119,7 +145,7 @@ export class ChatService {
       }
     }
     if (fullReply) {
-      await this.saveAiMessage(chatId, fullReply, model)
+      await this.saveAiMessage(chatId, fullReply, resolvedModel)
     }
   }
 

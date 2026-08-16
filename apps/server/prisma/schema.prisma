@@ -11,6 +11,8 @@ model User {
   id        String   @id @default(uuid())
   email     String   @unique
   name      String?
+  password  String   @default("default_hash_please_change")
+  avatar    String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   chats     Chat[]
@@ -44,4 +46,11 @@ model Document {
   chunks    Int      @default(0)
   status    String   @default("indexed") // indexed, processing, failed
   createdAt DateTime @default(now())
+}
+
+// key-value 配置表，存储 LLM provider 等可动态修改的配置项
+model Setting {
+  key       String   @id
+  value     String   @db.Text
+  updatedAt DateTime @updatedAt
 }

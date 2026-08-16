@@ -8,4 +8,7 @@ export type {
   CompletionRequest,
   CompletionResponse,
   NavTab,
+  AppSettings,
+  AuthResponse,
+  AuthUser,
 } from '@ai-workspace/types'

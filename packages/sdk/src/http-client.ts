@@ -1,4 +1,11 @@
-import type { CompletionRequest, CompletionResponse, KnowledgeDocument } from '@ai-workspace/types'
+import type {
+  CompletionRequest,
+  CompletionResponse,
+  KnowledgeDocument,
+  AppSettings,
+  AuthResponse,
+  AuthUser,
+} from '@ai-workspace/types'
 
 export type StreamChunk = { content?: string; done?: boolean; error?: string }
 
@@ -20,6 +27,9 @@ export interface ServerMessage {
 }
 
 export class HttpClient {
+  // 已登录用户的 JWT，登录成功后设置，随后可附到请求头
+  token: string | null = null
+
   constructor(private baseUrl: string) {}
 
   // 通用 JSON 请求
@@ -29,9 +39,42 @@ export class HttpClient {
       ...options,
     })
     if (!res.ok) {
-      throw new Error(`HTTP ${res.status}: ${res.statusText}`)
+      // 尝试解析 NestJS 异常体中的 message 字段
+      let detail = ''
+      try {
+        const body = await res.json()
+        if (typeof body?.message === 'string') detail = body.message
+      } catch {
+        // ignore
+      }
+      throw new Error(detail || `HTTP ${res.status}: ${res.statusText}`)
     }
     return res.json()
+  }
+
+  // ===== 认证 =====
+
+  // 注册新用户，返回 token + 用户信息
+  async register(input: { email: string; password: string; name?: string }): Promise<AuthResponse> {
+    return this.request<AuthResponse>('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+  }
+
+  // 登录，返回 token + 用户信息
+  async login(input: { email: string; password: string }): Promise<AuthResponse> {
+    return this.request<AuthResponse>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+  }
+
+  // 校验 token，返回当前用户信息
+  async me(): Promise<AuthUser> {
+    return this.request<AuthUser>('/auth/me', {
+      headers: { Authorization: `Bearer ${this.token}` },
+    })
   }
 
   // ===== 会话管理 =====
@@ -97,6 +140,21 @@ export class HttpClient {
     } catch {
       return false
     }
+  }
+
+  // ===== 配置管理 =====
+
+  // 获取全部配置
+  async getSettings(): Promise<AppSettings> {
+    return this.request<AppSettings>('/settings')
+  }
+
+  // 更新配置（部分更新）
+  async updateSettings(settings: Partial<AppSettings>): Promise<AppSettings> {
+    return this.request<AppSettings>('/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(settings),
+    })
   }
 
   // 流式发消息 — 返回 AsyncGenerator，逐 chunk 消费
