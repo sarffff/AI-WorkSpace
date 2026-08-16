@@ -57,7 +57,6 @@ ENV/
 
 # Prisma
 apps/server/prisma/*.db
-apps/server/prisma/migrations/
 
 # Redis
 dump.rdb

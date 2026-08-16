@@ -11,11 +11,12 @@ model User {
   id        String   @id @default(uuid())
   email     String   @unique
   name      String?
-  password  String   @default("default_hash_please_change")
+  password  String
   avatar    String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   chats     Chat[]
+  settings  Setting[]
 }
 
 model Chat {
@@ -40,17 +41,34 @@ model Message {
 }
 
 model Document {
-  id        String   @id @default(uuid())
+  id        String          @id @default(uuid())
   name      String
   size      Int
-  chunks    Int      @default(0)
-  status    String   @default("indexed") // indexed, processing, failed
-  createdAt DateTime @default(now())
+  chunks    Int             @default(0)
+  status    String          @default("indexed") // indexed, processing, failed
+  createdAt DateTime        @default(now())
+  chunkList KnowledgeChunk[]
 }
 
-// key-value 配置表，存储 LLM provider 等可动态修改的配置项
+model KnowledgeChunk {
+  id         String   @id @default(uuid())
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  index      Int
+  content    String   @db.Text
+  embedding  Json
+  createdAt  DateTime @default(now())
+
+  @@index([documentId])
+}
+
+// 配置表，存储每个用户独立的 LLM provider 等可动态修改的配置项
 model Setting {
-  key       String   @id
-  value     String   @db.Text
-  updatedAt DateTime @updatedAt
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  key       String
+  value     String    @db.Text
+  updatedAt DateTime  @updatedAt
+
+  @@id([userId, key])
 }

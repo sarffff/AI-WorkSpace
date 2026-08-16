@@ -48,30 +48,13 @@ export interface KnowledgeDocument {
 export interface CompletionRequest {
   prompt: string
   model?: string
+  useRag?: boolean
 }
 
 // ===== 完成响应管理 =====
 export interface CompletionResponse {
   success: boolean
   data: string
-}
-
-// ===== WebSocket 消息管理 =====
-export interface WsPromptMessage {
-  event: 'ai:prompt'
-  data: {
-    prompt: string
-    model: string
-  }
-}
-
-// ===== WebSocket 响应消息管理 =====
-export interface WsResponseMessage {
-  event: 'ai:response'
-  data: {
-    content: string
-    done: boolean
-  }
 }
 
 // ===== 导航标签管理 =====

@@ -261,7 +261,7 @@ export const ChatPage: React.FC = () => {
       try {
         for await (const chunk of api.streamMessage(
           sessionId,
-          { prompt: userMsg, model: selectedModel },
+          { prompt: userMsg, model: selectedModel, useRag: true },
           controller.signal,
         )) {
           if (chunk.error) {
@@ -331,7 +331,11 @@ export const ChatPage: React.FC = () => {
           api.renameChat(sessionId, title).catch(() => {})
         }
         try {
-          const res = await api.sendMessage(sessionId, { prompt: userMsg, model: selectedModel })
+          const res = await api.sendMessage(sessionId, {
+            prompt: userMsg,
+            model: selectedModel,
+            useRag: true,
+          })
           dispatch(
             addMessage({
               id: Date.now().toString(),

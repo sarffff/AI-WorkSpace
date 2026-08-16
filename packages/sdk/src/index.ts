@@ -1,6 +1,5 @@
-export { HttpClient } from './http-client'
-export { WsClient } from './ws-client'
-export type { MessageHandler } from './ws-client'
+export { HttpClient, AUTH_UNAUTHORIZED_EVENT } from './http-client'
+export type { StreamChunk, ServerChatSession, ServerMessage } from './http-client'
 export type {
   Message,
   ChatSession,

@@ -5,5 +5,6 @@ import { KnowledgeService } from './knowledge.service'
 @Module({
   controllers: [KnowledgeController],
   providers: [KnowledgeService],
+  exports: [KnowledgeService],
 })
 export class KnowledgeModule {}

@@ -4,8 +4,19 @@ import { HttpClient } from '@ai-workspace/sdk'
 export const api = new HttpClient('http://localhost:3000')
 
 // 恢复本地会话 token，供 /auth/me 校验使用
+// 兼容迁移：旧版本使用 aiws-token / aiws-user 键名，升级后自动搬到新键
 try {
-  api.token = localStorage.getItem('aiws-token')
+  const legacyToken = localStorage.getItem('aiws-token')
+  const legacyUser = localStorage.getItem('aiws-user')
+  if (legacyToken && !localStorage.getItem('auth_token')) {
+    localStorage.setItem('auth_token', legacyToken)
+    if (legacyUser && !localStorage.getItem('auth_user')) {
+      localStorage.setItem('auth_user', legacyUser)
+    }
+    localStorage.removeItem('aiws-token')
+    localStorage.removeItem('aiws-user')
+  }
+  api.token = localStorage.getItem('auth_token')
 } catch {
   // ignore
 }

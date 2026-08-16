@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import type { KnowledgeDocument } from '@ai-workspace/sdk'
-import { Upload, FileText, Search, Layers, Files, Database } from 'lucide-react'
+import { Upload, FileText, Search, Layers, Files, Database, Trash2, Loader2 } from 'lucide-react'
 
 import { api } from '@/shared/api/client'
 
@@ -9,6 +9,35 @@ function formatSize(bytes: number): string {
   if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(0)} KB`
   return `${bytes} B`
 }
+
+// 与服务端 KnowledgeService 支持的扩展名保持一致
+const SUPPORTED_EXTS = [
+  'pdf',
+  'docx',
+  'txt',
+  'md',
+  'markdown',
+  'json',
+  'csv',
+  'ts',
+  'js',
+  'jsx',
+  'tsx',
+  'py',
+  'java',
+  'go',
+  'html',
+  'css',
+  'yml',
+  'yaml',
+  'xml',
+  'log',
+  'sql',
+  'sh',
+  'bat',
+  'ini',
+  'toml',
+]
 
 const STATUS_STYLE: Record<string, string> = {
   indexed: 'bg-brand/10 text-brand border-brand/25',
@@ -26,16 +55,56 @@ export const KnowledgePage: React.FC = () => {
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([])
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState('')
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
-  useEffect(() => {
-    api
+  const refresh = () => {
+    return api
       .getDocuments()
       .then((docs) => setDocuments(docs))
-      .catch(() => {
-        // fallback to empty
-      })
+      .catch(() => {})
       .finally(() => setLoading(false))
+  }
+
+  useEffect(() => {
+    refresh()
   }, [])
+
+  // 上传：前端先校验扩展名 → 调后端抽取/切块/向量化 → 刷新列表
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = '' // 允许连续上传同一个文件
+    if (!file) return
+
+    const ext = file.name.split('.').pop()?.toLowerCase() || ''
+    if (!SUPPORTED_EXTS.includes(ext)) {
+      setUploadError(
+        `不支持的文件类型 .${ext}（支持: ${SUPPORTED_EXTS.slice(0, 8).join(', ')} 等）`,
+      )
+      return
+    }
+
+    setUploading(true)
+    setUploadError('')
+    try {
+      await api.uploadDocument(file, file.name)
+      await refresh()
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : '上传失败')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const handleDelete = async (id: string) => {
+    try {
+      await api.deleteDocument(id)
+      setDocuments((prev) => prev.filter((d) => d.id !== id))
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : '删除失败')
+    }
+  }
 
   const totalChunks = useMemo(() => documents.reduce((sum, d) => sum + d.chunks, 0), [documents])
   const filtered = useMemo(
@@ -78,11 +147,34 @@ export const KnowledgePage: React.FC = () => {
               文档经「上传 → 切片 → 向量化 → 索引」流水线处理，为 Agent 提供检索增强上下文。
             </p>
           </div>
-          <button className="px-4 py-2.5 bg-brand/10 hover:bg-emerald-500/20 border border-brand/30 hover:border-brand/50 text-brand text-xs font-semibold rounded-lg flex items-center gap-2 transition-all shrink-0">
-            <Upload className="w-4 h-4" />
-            上传文档
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+            className="px-4 py-2.5 bg-brand/10 hover:bg-emerald-500/20 disabled:opacity-50 border border-brand/30 hover:border-brand/50 text-brand text-xs font-semibold rounded-lg flex items-center gap-2 transition-all shrink-0"
+          >
+            {uploading ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Upload className="w-4 h-4" />
+            )}
+            {uploading ? '索引中...' : '上传文档'}
           </button>
+          {/* 隐藏的文件选择框 */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={SUPPORTED_EXTS.map((e) => '.' + e).join(',')}
+            onChange={handleUpload}
+            className="hidden"
+          />
         </div>
+
+        {/* 上传错误提示 */}
+        {uploadError && (
+          <div className="px-4 py-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs font-mono">
+            {uploadError}
+          </div>
+        )}
 
         {/* 指标遥测 */}
         <div className="grid grid-cols-3 gap-4">
@@ -147,6 +239,13 @@ export const KnowledgePage: React.FC = () => {
                   >
                     {STATUS_LABEL[doc.status] || doc.status.toUpperCase()}
                   </span>
+                  <button
+                    onClick={() => handleDelete(doc.id)}
+                    title="删除文档"
+                    className="w-7 h-7 rounded-lg flex items-center justify-center text-t4 hover:text-rose-400 hover:bg-rose-500/10 transition-colors opacity-0 group-hover:opacity-100"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               </div>
             ))}

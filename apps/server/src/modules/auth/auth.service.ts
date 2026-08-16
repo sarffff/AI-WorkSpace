@@ -1,9 +1,7 @@
-import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common'
-import { ConfigService } from '@nestjs/config'
+import { Injectable, ConflictException, UnauthorizedException } from '@nestjs/common'
+import { JwtService } from '@nestjs/jwt'
+import * as bcrypt from 'bcrypt'
 import { PrismaService } from '@/prisma/prisma.service'
-import * as bcrypt from 'bcryptjs'
-import * as jwt from 'jsonwebtoken'
-import type { User } from '@prisma/client'
 import { RegisterDto, LoginDto } from './auth.dto'
 
 export interface SafeUser {
@@ -13,71 +11,68 @@ export interface SafeUser {
   avatar: string | null
 }
 
-const FALLBACK_SECRET = 'ai-workspace-dev-secret'
-
 @Injectable()
 export class AuthService {
   constructor(
     private prisma: PrismaService,
-    private config: ConfigService,
+    private jwtService: JwtService,
   ) {}
 
-  // 注册：校验邮箱唯一 → 哈希密码 → 建用户 → 签发 token
+  // 注册：校验邮箱唯一 → bcrypt 加密 → 建用户 → 签发 token
+  // 兼容历史无密码用户：已有记录则补写密码（视为认领账号）
   async register(dto: RegisterDto) {
-    const exists = await this.prisma.user.findUnique({ where: { email: dto.email } })
-    if (exists) throw new ConflictException('该邮箱已被注册')
+    const existing = await this.prisma.user.findUnique({ where: { email: dto.email } })
+    if (existing?.password) throw new ConflictException('该邮箱已被注册')
 
-    const password = await bcrypt.hash(dto.password, 10)
-    const user = await this.prisma.user.create({
-      data: {
-        email: dto.email,
-        password,
-        name: dto.name || dto.email.split('@')[0],
-      },
-    })
-    return this.issueToken(user)
+    const hashedPassword = await bcrypt.hash(dto.password, 10)
+    const user = existing
+      ? await this.prisma.user.update({
+          where: { id: existing.id },
+          data: { password: hashedPassword, name: dto.name || existing.name },
+        })
+      : await this.prisma.user.create({
+          data: { email: dto.email, password: hashedPassword, name: dto.name },
+        })
+
+    return this.buildAuthResponse(user)
   }
 
-  // 登录：比对密码哈希 → 签发 token
+  // 登录：校验密码 → 签发 token
   async login(dto: LoginDto) {
     const user = await this.prisma.user.findUnique({ where: { email: dto.email } })
-    if (!user) throw new UnauthorizedException('邮箱或密码错误')
+    if (!user || !user.password) throw new UnauthorizedException('邮箱或密码错误')
 
-    // 兼容历史种子用户（默认哈希占位值无法通过校验）
-    const valid =
-      user.password && user.password !== 'default_hash_please_change'
-        ? await bcrypt.compare(dto.password, user.password)
-        : false
+    const valid = await bcrypt.compare(dto.password, user.password)
     if (!valid) throw new UnauthorizedException('邮箱或密码错误')
 
-    return this.issueToken(user)
+    return this.buildAuthResponse(user)
   }
 
-  // 校验 token，返回当前用户信息
-  async verifyUser(token: string): Promise<SafeUser> {
-    try {
-      const secret = this.config.get<string>('JWT_SECRET') || FALLBACK_SECRET
-      const payload = jwt.verify(token, secret) as { sub: string }
-      const user = await this.prisma.user.findUnique({ where: { id: payload.sub } })
-      if (!user) throw new UnauthorizedException('用户不存在')
-      return this.toSafeUser(user)
-    } catch {
-      throw new UnauthorizedException('登录已过期，请重新登录')
-    }
+  // JWT 策略回调：token 里的 sub → 用户（挂在 request.user 上）
+  async validateUser(userId: string): Promise<SafeUser> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } })
+    if (!user) throw new UnauthorizedException('用户不存在')
+    return this.toSafeUser(user)
   }
 
   // ===== 工具方法 =====
 
-  private issueToken(user: User) {
-    const secret = this.config.get<string>('JWT_SECRET') || FALLBACK_SECRET
-    const expiresIn = this.config.get<string>('JWT_EXPIRES_IN') || '7d'
-    const token = jwt.sign({ sub: user.id, email: user.email }, secret, {
-      expiresIn,
-    } as jwt.SignOptions)
+  private buildAuthResponse(user: {
+    id: string
+    email: string
+    name: string | null
+    avatar: string | null
+  }) {
+    const token = this.jwtService.sign({ sub: user.id, email: user.email })
     return { token, user: this.toSafeUser(user) }
   }
 
-  private toSafeUser(user: User): SafeUser {
+  private toSafeUser(user: {
+    id: string
+    email: string
+    name: string | null
+    avatar: string | null
+  }): SafeUser {
     return { id: user.id, email: user.email, name: user.name, avatar: user.avatar }
   }
 }
