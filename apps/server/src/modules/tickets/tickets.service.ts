@@ -26,6 +26,15 @@ export class TicketsService {
     return tickets
   }
 
+  // 可分派坐席列表（agent/admin），供工单转派下拉使用
+  async listStaff() {
+    return this.prisma.user.findMany({
+      where: { role: { in: ['agent', 'admin'] } },
+      select: { id: true, name: true, email: true, role: true },
+      orderBy: [{ role: 'asc' }, { createdAt: 'asc' }],
+    })
+  }
+
   async create(userId: string, dto: CreateTicketDto) {
     return this.prisma.ticket.create({
       data: {

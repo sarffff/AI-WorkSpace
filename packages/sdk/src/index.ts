@@ -11,6 +11,7 @@ export type {
   PromptItem,
   TicketItem,
   TicketUserBrief,
+  TicketStaff,
   CompletionRequest,
   CompletionResponse,
   NavTab,

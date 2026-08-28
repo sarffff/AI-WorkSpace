@@ -6,6 +6,7 @@ import type {
   PromptItem,
   TicketItem,
   TicketRef,
+  TicketStaff,
   ToolTraceStep,
   AppSettings,
   AuthResponse,
@@ -284,6 +285,11 @@ export class HttpClient {
   // 工单列表（员工只看自己的，坐席/管理员看全部）
   async listTickets(): Promise<TicketItem[]> {
     return this.request<TicketItem[]>('/tickets')
+  }
+
+  // 可分派坐席列表（转派下拉数据源）
+  async listTicketStaff(): Promise<TicketStaff[]> {
+    return this.request<TicketStaff[]>('/tickets/staff')
   }
 
   // 创建工单

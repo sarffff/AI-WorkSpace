@@ -94,6 +94,14 @@ export interface TicketUserBrief {
   email: string
 }
 
+/** 可分派的坐席/管理员（转派下拉数据源） */
+export interface TicketStaff {
+  id: string
+  name: string | null
+  email: string
+  role: 'agent' | 'admin'
+}
+
 export interface TicketItem {
   id: string
   title: string

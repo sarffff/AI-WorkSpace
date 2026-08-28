@@ -16,6 +16,12 @@ export class TicketsController {
     return this.ticketsService.list(user)
   }
 
+  // 可分派坐席列表（需在 :id 路由之前注册，避免被路径参数吞掉）
+  @Get('staff')
+  listStaff() {
+    return this.ticketsService.listStaff()
+  }
+
   @Post()
   create(@CurrentUser() user: SafeUser, @Body() dto: CreateTicketDto) {
     return this.ticketsService.create(user.id, dto)
