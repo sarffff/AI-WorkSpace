@@ -1,5 +1,5 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit'
-import type { Message, ChatSession, NavTab } from '@ai-workspace/sdk'
+import type { Message, ChatSession, NavTab } from '@servicedesk/sdk'
 
 interface ChatState {
   activeTab: NavTab
@@ -9,6 +9,8 @@ interface ChatState {
   currentChatId: string | null
   sessions: ChatSession[]
   messagesBySession: Record<string, Message[]>
+  /** 已注入对话的提示词（作为 system 角色随请求发送） */
+  activePrompt: { id: string; title: string; content: string } | null
 }
 
 const initialState: ChatState = {
@@ -19,6 +21,7 @@ const initialState: ChatState = {
   currentChatId: null,
   sessions: [],
   messagesBySession: {},
+  activePrompt: null,
 }
 
 let _nextId = 1
@@ -43,6 +46,19 @@ export const chatSlice = createSlice({
       state.serverStatus = action.payload
     },
 
+    // ===== 提示词注入 =====
+
+    setActivePrompt: (
+      state,
+      action: PayloadAction<{ id: string; title: string; content: string }>,
+    ) => {
+      state.activePrompt = action.payload
+      state.activeTab = 'chat'
+    },
+    clearActivePrompt: (state) => {
+      state.activePrompt = null
+    },
+
     // ===== 会话管理 =====
 
     createChat: {
@@ -53,6 +69,7 @@ export const chatSlice = createSlice({
           title: '新对话',
           date: now(),
           pinned: false,
+          tokens: { promptTokens: 0, completionTokens: 0 },
         }
         state.sessions.unshift(session)
         state.currentChatId = id
@@ -130,6 +147,8 @@ export const {
   setSelectedModel,
   setIsGenerating,
   setServerStatus,
+  setActivePrompt,
+  clearActivePrompt,
   createChat,
   setCurrentChat,
   renameChat,

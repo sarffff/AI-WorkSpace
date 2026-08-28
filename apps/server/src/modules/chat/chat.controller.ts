@@ -65,15 +65,21 @@ export class ChatController {
 
   // ===== AI 对话 =====
 
-  // 非流式对话（一次返回完整响应）
+  // 非流式对话（一次返回完整响应；systemPrompt 为注入的角色提示词）
   @Post(':id/completions')
   async completions(
     @UserId() userId: string,
     @Param('id') id: string,
-    @Body() body: { prompt: string; model?: string; useRag?: boolean },
+    @Body() body: { prompt: string; model?: string; useRag?: boolean; systemPrompt?: string },
   ) {
     await this.chatService.assertOwned(userId, id)
-    const data = await this.chatService.generateAiResponse(id, body.prompt, body.model, body.useRag)
+    const data = await this.chatService.generateAiResponse(
+      id,
+      body.prompt,
+      body.model,
+      body.useRag,
+      body.systemPrompt,
+    )
     return { success: true, data }
   }
 
@@ -83,7 +89,7 @@ export class ChatController {
   async streamCompletions(
     @UserId() userId: string,
     @Param('id') id: string,
-    @Body() body: { prompt: string; model?: string; useRag?: boolean },
+    @Body() body: { prompt: string; model?: string; useRag?: boolean; systemPrompt?: string },
     @Res() res: Response,
   ) {
     res.setHeader('Content-Type', 'text/event-stream')
@@ -92,13 +98,24 @@ export class ChatController {
 
     try {
       await this.chatService.assertOwned(userId, id)
-      for await (const chunk of this.chatService.streamAiResponse(
+      const { stream } = await this.chatService.startStream(
         id,
         body.prompt,
         body.model,
         body.useRag,
-      )) {
-        res.write(`data: ${JSON.stringify({ content: chunk })}\n\n`)
+        body.systemPrompt,
+      )
+      // Agent 事件流：工具轨迹 / 工单 / 引用溯源 均先于正文 token 推送
+      for await (const evt of stream) {
+        if (evt.type === 'content') {
+          res.write(`data: ${JSON.stringify({ content: evt.text })}\n\n`)
+        } else if (evt.type === 'sources') {
+          res.write(`data: ${JSON.stringify({ sources: evt.sources })}\n\n`)
+        } else if (evt.type === 'tool') {
+          res.write(`data: ${JSON.stringify({ tool: evt.step })}\n\n`)
+        } else if (evt.type === 'ticket') {
+          res.write(`data: ${JSON.stringify({ ticket: evt.ticket })}\n\n`)
+        }
       }
       res.write(`data: ${JSON.stringify({ done: true })}\n\n`)
     } catch (err) {
