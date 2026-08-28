@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { KeyRound, Database, Cpu, CheckCircle2, XCircle, Loader2, Save } from 'lucide-react'
 import type { AppSettings } from '@servicedesk/sdk'
 
-import { api } from '@/shared/api/client'
+import { api, getApiBaseUrl, setApiBaseUrl } from '@/shared/api/client'
 
 type TestStatus = 'idle' | 'testing' | 'ok' | 'fail'
 
@@ -16,6 +16,9 @@ export const SettingsPage: React.FC = () => {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [testStatus, setTestStatus] = useState<TestStatus>('idle')
+  const [serverUrl, setServerUrl] = useState(getApiBaseUrl())
+  const [serverUrlEdited, setServerUrlEdited] = useState(false)
+  const [serverUrlInvalid, setServerUrlInvalid] = useState(false)
 
   // 初始加载配置
   useEffect(() => {
@@ -159,14 +162,42 @@ export const SettingsPage: React.FC = () => {
             </div>
             <div>
               <h4 className="font-display text-sm font-semibold text-t1">后端连接</h4>
-              <span className="text-[11px] text-t3">检测与 NestJS 后端服务（:3000）的连通性</span>
+              <span className="text-[11px] text-t3">配置 NestJS 后端服务地址并检测连通性</span>
             </div>
+          </div>
+
+          <div>
+            <label className="tag-telemetry text-[9px] font-mono text-t3 mb-1.5 block">
+              服务器地址（http(s)://，保存后立即生效）
+            </label>
+            <input
+              type="text"
+              value={serverUrl}
+              onChange={(e) => {
+                setServerUrl(e.target.value)
+                setServerUrlEdited(true)
+                setServerUrlInvalid(false)
+              }}
+              placeholder="http://localhost:3000"
+              className={`${inputCls} ${serverUrlInvalid ? 'border-rose-400/60' : ''}`}
+            />
+            {serverUrlInvalid && (
+              <p className="text-[10px] font-mono text-rose-400 mt-1.5 fade-in">
+                INVALID URL — 需以 http:// 或 https:// 开头
+              </p>
+            )}
           </div>
 
           <div className="flex items-center gap-4">
             <button
-              onClick={handleTestConnection}
-              disabled={testStatus === 'testing'}
+              onClick={() => {
+                if (!setApiBaseUrl(serverUrl)) {
+                  setServerUrlInvalid(true)
+                  return
+                }
+                setServerUrlEdited(false)
+                handleTestConnection()
+              }}
               className="flex items-center gap-2 px-4 py-2.5 bg-s3 hover:bg-s3 disabled:opacity-50 text-t2 text-xs font-semibold rounded-lg transition-all border border-line"
             >
               {testStatus === 'testing' && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
@@ -175,8 +206,14 @@ export const SettingsPage: React.FC = () => {
               {(testStatus === 'idle' || testStatus === 'testing') && (
                 <Cpu className="w-3.5 h-3.5" />
               )}
-              测试连接
+              {serverUrlEdited ? '保存并测试连接' : '测试连接'}
             </button>
+
+            {serverUrlEdited && testStatus !== 'testing' && (
+              <span className="text-[11px] font-mono text-amber-400 fade-in">
+                地址已修改，点击按钮保存后生效
+              </span>
+            )}
 
             {testStatus === 'ok' && (
               <span className="text-[11px] font-mono text-brand flex items-center gap-1.5 fade-in">

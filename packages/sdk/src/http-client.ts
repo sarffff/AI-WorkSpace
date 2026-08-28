@@ -63,6 +63,15 @@ export class HttpClient {
 
   constructor(private baseUrl: string) {}
 
+  // 运行时切换后端地址（桌面端“服务器地址”配置入口）
+  setBaseUrl(url: string): void {
+    this.baseUrl = url.replace(/\/+$/, '')
+  }
+
+  getBaseUrl(): string {
+    return this.baseUrl
+  }
+
   // 附加 Bearer token 的请求头
   private authHeaders(extra?: Record<string, string>): Record<string, string> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json', ...extra }
