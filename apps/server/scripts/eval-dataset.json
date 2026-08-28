@@ -1,0 +1,17 @@
+[
+  {
+    "query": "VPN 连接失败如何排查？",
+    "expectedDocs": ["sd-eval-test.md"],
+    "note": "示例条目：请根据知识库实际语料改写 query 与期望命中的文档名"
+  },
+  {
+    "query": "报销流程需要哪些审批步骤？",
+    "expectedDocs": ["sd-eval-test.md"],
+    "note": "expectedDocs 支持多个（命中其一即算命中）"
+  },
+  {
+    "query": "量子计算机的量子比特纠缠原理",
+    "expectedDocs": [],
+    "note": "expectedDocs 为空 = 期望『无命中』，用于验证负例不误召回"
+  }
+]

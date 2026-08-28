@@ -8,58 +8,130 @@ generator client {
 }
 
 model User {
+  id         String   @id @default(uuid())
+  email      String   @unique
+  name       String?
+  password   String
+  avatar     String?
+  department String? // 所属部门（权限过滤检索的依据）
+  role       String   @default("employee") // employee 普通员工 | agent 服务台坐席 | admin 管理员
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  chats       Chat[]
+  settings    Setting[]
+  documents   Document[]
+  prompts     Prompt[]
+  ticketsCreated  Ticket[] @relation("TicketCreator")
+  ticketsAssigned Ticket[] @relation("TicketAssignee")
+  memories        Memory[]
+}
+
+// 跨会话长期记忆：用户偏好/关键事实/工单记录，会话开始时注入上下文
+model Memory {
   id        String   @id @default(uuid())
-  email     String   @unique
-  name      String?
-  password  String
-  avatar    String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category  String // preference 偏好 | fact 事实 | ticket 工单记录
+  content   String   @db.VarChar(255)
+  chatId    String? // 来源会话（溯源，不建外键）
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  chats     Chat[]
-  settings  Setting[]
+
+  @@index([userId, category])
+  @@unique([userId, category, content])
 }
 
 model Chat {
-  id        String    @id @default(uuid())
-  title     String
-  pinned    Boolean   @default(false)
-  userId    String
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  messages  Message[]
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  id               String    @id @default(uuid())
+  title            String
+  pinned           Boolean   @default(false)
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  summary          String? // 早期对话压缩摘要（token 裁剪的配套，后台异步生成）
+  summaryAnchorId  String? // 摘要覆盖到的最后一条消息 id（生成锚点，避免重复总结）
+  messages         Message[]
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 }
 
 model Message {
-  id        String   @id @default(uuid())
-  content   String   @db.Text
-  role      String   // user, assistant, system
-  model     String?
-  chatId    String
-  chat      Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  createdAt DateTime @default(now())
+  id               String   @id @default(uuid())
+  content          String   @db.Text
+  role             String   // user, assistant, system
+  model            String?
+  sources          Json? // RAG 引用溯源（命中片段 + 得分 + 来源文档）
+  promptTokens     Int? // 本次回答全部 LLM 调用的输入 token 数（工具循环/生成，不含后台摘要）
+  completionTokens Int? // 输出 token 数
+  chatId           String
+  chat             Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  createdAt        DateTime @default(now())
+}
+
+// 工单域：AI 无法自动解决时升级人工，构成服务台闭环
+model Ticket {
+  id         String    @id @default(uuid())
+  title      String
+  content    String    @db.Text
+  status     String    @default("open") // open 待处理 | processing 处理中 | resolved 已解决 | closed 已关闭
+  priority   String    @default("normal") // low | normal | high | urgent
+  creatorId  String
+  creator    User      @relation("TicketCreator", fields: [creatorId], references: [id], onDelete: Cascade)
+  assigneeId String?
+  assignee   User?     @relation("TicketAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([creatorId])
+  @@index([assigneeId])
+  @@index([status])
 }
 
 model Document {
   id        String          @id @default(uuid())
+  userId    String
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   name      String
   size      Int
   chunks    Int             @default(0)
   status    String          @default("indexed") // indexed, processing, failed
+  department String?        // 非空 = 共享至该部门检索；空 = 仅本人可见
   createdAt DateTime        @default(now())
   chunkList KnowledgeChunk[]
+
+  @@index([userId])
+  @@index([department])
 }
 
+// 双级切块：父块（parentId 为空）内容完整，供 LLM 上下文；叶子块（parentId 非空）
+// 带上下文前缀（文档名 > 章节路径）参与检索，命中后返回其父块（Small-to-Big）。
+// 旧版单级块：embedding 非空且 parentId 为空 → 视为叶子，命中后返回自身。
 model KnowledgeChunk {
-  id         String   @id @default(uuid())
-  documentId String
-  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  index      Int
-  content    String   @db.Text
-  embedding  Json
-  createdAt  DateTime @default(now())
+  id          String   @id @default(uuid())
+  documentId  String
+  document    Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  parentId    String?  // 非空 = 叶子块；空 = 父块（或旧版单级块）
+  sectionPath String?  // 结构切块记录的章节路径，如 "VPN 排查 > 连接失败"
+  index       Int
+  content     String   @db.Text
+  embedding   Json?    // 仅叶子块有值（上下文前缀+正文的向量）；父块为 NULL
+  createdAt   DateTime @default(now())
 
   @@index([documentId])
+  @@index([parentId])
+}
+
+// 提示词：每用户独立的角色预设，可一键注入对话
+model Prompt {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  content   String   @db.Text
+  category  String   @default("通用")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
 }
 
 // 配置表，存储每个用户独立的 LLM provider 等可动态修改的配置项
