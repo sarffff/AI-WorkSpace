@@ -7,6 +7,8 @@ import type {
   TicketItem,
   TicketRef,
   TicketStaff,
+  TicketDetail,
+  TicketCommentItem,
   ToolTraceStep,
   AppSettings,
   AuthResponse,
@@ -290,6 +292,19 @@ export class HttpClient {
   // 可分派坐席列表（转派下拉数据源）
   async listTicketStaff(): Promise<TicketStaff[]> {
     return this.request<TicketStaff[]>('/tickets/staff')
+  }
+
+  // 工单详情（含评论 + 系统事件时间线）
+  async getTicketDetail(id: string): Promise<TicketDetail> {
+    return this.request<TicketDetail>(`/tickets/${id}`)
+  }
+
+  // 工单时间线评论（创建者与坐席/管理员可留言）
+  async addTicketComment(id: string, content: string): Promise<TicketCommentItem> {
+    return this.request<TicketCommentItem>(`/tickets/${id}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ content }),
+    })
   }
 
   // 创建工单

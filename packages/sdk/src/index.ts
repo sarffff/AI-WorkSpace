@@ -12,6 +12,8 @@ export type {
   TicketItem,
   TicketUserBrief,
   TicketStaff,
+  TicketDetail,
+  TicketCommentItem,
   CompletionRequest,
   CompletionResponse,
   NavTab,

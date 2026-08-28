@@ -541,7 +541,12 @@ ${context}`,
         const priority = ['low', 'normal', 'high', 'urgent'].includes(args.priority as string)
           ? (args.priority as string)
           : 'normal'
-        const ticket = await this.ticketsService.create(owner.id, { title, content, priority })
+        const ticket = await this.ticketsService.create(owner.id, {
+          title,
+          content,
+          priority,
+          source: 'agent',
+        })
         this.logger.log(`agent created ticket "${title}" for user ${owner.id}`)
         // 长期记忆：工单记录跨会话可回溯（"上次的工单怎么样了"）
         await this.memoryService.remember(

@@ -1,6 +1,6 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common'
 import { TicketsService } from './tickets.service'
-import { CreateTicketDto, UpdateTicketDto } from './tickets.dto'
+import { CreateTicketDto, CreateTicketCommentDto, UpdateTicketDto } from './tickets.dto'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { CurrentUser } from '../auth/user-id.decorator'
 import type { SafeUser } from '../auth/auth.service'
@@ -30,6 +30,16 @@ export class TicketsController {
   @Get(':id')
   detail(@CurrentUser() user: SafeUser, @Param('id') id: string) {
     return this.ticketsService.detail(user, id)
+  }
+
+  // 工单时间线评论（创建者与坐席/管理员可留言）
+  @Post(':id/comments')
+  addComment(
+    @CurrentUser() user: SafeUser,
+    @Param('id') id: string,
+    @Body() dto: CreateTicketCommentDto,
+  ) {
+    return this.ticketsService.addComment(user, id, dto)
   }
 
   @Patch(':id')

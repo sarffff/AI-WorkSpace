@@ -23,6 +23,7 @@ model User {
   prompts     Prompt[]
   ticketsCreated  Ticket[] @relation("TicketCreator")
   ticketsAssigned Ticket[] @relation("TicketAssignee")
+  ticketComments  TicketComment[] @relation("TicketCommentAuthor")
   memories        Memory[]
 }
 
@@ -84,6 +85,21 @@ model Ticket {
   @@index([creatorId])
   @@index([assigneeId])
   @@index([status])
+  comments TicketComment[]
+}
+
+// 工单时间线：坐席与创建者的往来评论 + 状态流转/受理/转派的系统事件自动记录
+model TicketComment {
+  id        String   @id @default(uuid())
+  ticketId  String
+  ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User     @relation("TicketCommentAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  kind      String   @default("comment") // comment 用户评论 | system 系统事件（自动写入）
+  content   String   @db.VarChar(1000)
+  createdAt DateTime @default(now())
+
+  @@index([ticketId, createdAt])
 }
 
 model Document {

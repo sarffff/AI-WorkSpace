@@ -92,6 +92,8 @@ export interface TicketUserBrief {
   id: string
   name: string | null
   email: string
+  /** 坐席/管理员评论展示身份徽标用 */
+  role?: string
 }
 
 /** 可分派的坐席/管理员（转派下拉数据源） */
@@ -100,6 +102,20 @@ export interface TicketStaff {
   name: string | null
   email: string
   role: 'agent' | 'admin'
+}
+
+/** 工单时间线条目：用户评论 + 系统事件（状态流转/受理/转派自动记录） */
+export interface TicketCommentItem {
+  id: string
+  kind: 'comment' | 'system'
+  content: string
+  author: TicketUserBrief
+  createdAt: string
+}
+
+/** 工单详情（含完整时间线） */
+export interface TicketDetail extends TicketItem {
+  comments: TicketCommentItem[]
 }
 
 export interface TicketItem {
@@ -112,6 +128,8 @@ export interface TicketItem {
   assignee: TicketUserBrief | null
   createdAt: string
   updatedAt: string
+  /** 列表接口附带：最新一条时间线预览（comment/system） */
+  comments?: { kind: 'comment' | 'system'; content: string; createdAt: string }[]
 }
 
 // ===== 提示词管理 =====

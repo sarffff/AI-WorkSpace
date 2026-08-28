@@ -17,6 +17,11 @@ export class CreateTicketDto {
   @IsOptional()
   @IsIn(PRIORITIES, { message: '优先级不合法' })
   priority?: string
+
+  // 建单来源标记：agent = AI 对话中自动升级（内部调用），缺省 = 手动创建
+  @IsOptional()
+  @IsIn(['agent', 'manual'], { message: '来源不合法' })
+  source?: string
 }
 
 // 更新工单（坐席/管理员：状态、优先级、受理人；创建者：仅可关闭自己的工单）
@@ -33,4 +38,12 @@ export class UpdateTicketDto {
   @IsString()
   @Length(1, 64, { message: '受理人 ID 不合法' })
   assigneeId?: string | null
+}
+
+// 工单评论（创建者与坐席/管理员均可在时间线留言）
+export class CreateTicketCommentDto {
+  @IsString()
+  @IsNotEmpty({ message: '评论内容不能为空' })
+  @MaxLength(1000, { message: '评论过长（最多 1000 字）' })
+  content: string
 }
