@@ -20,9 +20,9 @@ import {
 type Mode = 'login' | 'register'
 
 const FEATURES = [
-  { icon: <Zap className="w-3.5 h-3.5" />, label: 'SSE 流式对话', sub: 'STREAM' },
-  { icon: <BookOpen className="w-3.5 h-3.5" />, label: 'RAG 知识库检索', sub: 'RETRIEVAL' },
-  { icon: <Settings2 className="w-3.5 h-3.5" />, label: '动态 LLM 配置', sub: 'RUNTIME' },
+  { icon: <Zap className="w-3.5 h-3.5" />, label: 'SSE 流式对话', sub: '实时响应' },
+  { icon: <BookOpen className="w-3.5 h-3.5" />, label: 'RAG 知识库检索', sub: '引用溯源' },
+  { icon: <Settings2 className="w-3.5 h-3.5" />, label: '动态 LLM 配置', sub: '热更新' },
 ]
 
 export const AuthPage: React.FC = () => {
@@ -32,6 +32,7 @@ export const AuthPage: React.FC = () => {
   const [mode, setMode] = useState<Mode>('login')
   const [email, setEmail] = useState('')
   const [name, setName] = useState('')
+  const [department, setDepartment] = useState('')
   const [password, setPassword] = useState('')
   const [showPwd, setShowPwd] = useState(false)
   const [error, setError] = useState('')
@@ -57,7 +58,12 @@ export const AuthPage: React.FC = () => {
       const res =
         mode === 'login'
           ? await api.login({ email: email.trim(), password })
-          : await api.register({ email: email.trim(), password, name: name.trim() || undefined })
+          : await api.register({
+              email: email.trim(),
+              password,
+              name: name.trim() || undefined,
+              department: department.trim() || undefined,
+            })
       api.token = res.token
       dispatch(loginSuccess({ token: res.token, user: res.user }))
     } catch (err) {
@@ -109,10 +115,10 @@ export const AuthPage: React.FC = () => {
           </div>
           <div>
             <h1 className="font-display font-bold text-lg text-t1 tracking-tight leading-none">
-              AI Workspace
+              ServiceDeck
             </h1>
             <span className="text-[10px] font-mono text-brand/80 tracking-wider mt-1 block">
-              ENTERPRISE AGENT CONSOLE
+              企业级智能服务台
             </span>
           </div>
         </div>
@@ -124,7 +130,7 @@ export const AuthPage: React.FC = () => {
           >
             你的企业级
             <br />
-            <span className="text-brand">Agent 工作台</span>
+            <span className="text-brand">智能服务台</span>
           </h2>
           <p
             className="rise-in text-sm text-t3 leading-relaxed mt-5"
@@ -151,13 +157,13 @@ export const AuthPage: React.FC = () => {
           className="rise-in flex items-center gap-4 text-[9px] font-mono text-t4 tag-telemetry"
           style={{ animationDelay: '340ms' }}
         >
-          <span>NESTJS</span>
+          <span>服务框架</span>
           <span className="w-1 h-1 rounded-full bg-line" />
-          <span>PRISMA · MYSQL</span>
+          <span>数据持久化</span>
           <span className="w-1 h-1 rounded-full bg-line" />
-          <span>SSE STREAMING</span>
+          <span>流式传输</span>
           <span className="w-1 h-1 rounded-full bg-line" />
-          <span>REDIS</span>
+          <span>高速缓存</span>
         </div>
       </div>
 
@@ -169,7 +175,7 @@ export const AuthPage: React.FC = () => {
             <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-emerald-400/90 to-teal-600/90 flex items-center justify-center">
               <Activity className="w-5 h-5 text-brand-on" strokeWidth={2.5} />
             </div>
-            <span className="font-display font-bold text-t1">AI Workspace</span>
+            <span className="font-display font-bold text-t1">ServiceDeck</span>
           </div>
 
           {/* 模式切换 */}
@@ -203,7 +209,7 @@ export const AuthPage: React.FC = () => {
               {mode === 'login' ? '欢迎回来' : '创建账户'}
             </h3>
             <p className="text-[11px] font-mono text-t4 mt-1 tracking-wide">
-              {mode === 'login' ? '// AUTHENTICATE TO CONTINUE' : '// PROVISION NEW OPERATOR'}
+              {mode === 'login' ? '登录已有账户' : '创建新账户'}
             </p>
           </div>
 
@@ -228,9 +234,25 @@ export const AuthPage: React.FC = () => {
               </div>
             )}
 
+            {mode === 'register' && (
+              <div className="fade-in">
+                <label className="tag-telemetry text-[9px] font-mono text-t3 mb-1.5 block">
+                  部门（可选 · 决定知识库共享范围）
+                </label>
+                <input
+                  type="text"
+                  value={department}
+                  onChange={(e) => setDepartment(e.target.value)}
+                  placeholder="如：技术部"
+                  maxLength={30}
+                  className={inputCls}
+                />
+              </div>
+            )}
+
             <div>
               <label className="tag-telemetry text-[9px] font-mono text-t3 mb-1.5 block">
-                Email
+                邮箱
               </label>
               <input
                 type="email"
@@ -244,7 +266,7 @@ export const AuthPage: React.FC = () => {
 
             <div>
               <label className="tag-telemetry text-[9px] font-mono text-t3 mb-1.5 block">
-                Password
+                密码
               </label>
               <div className="relative">
                 <input
@@ -290,7 +312,7 @@ export const AuthPage: React.FC = () => {
 
           {/* 第三方登录（展示） */}
           <div className="rise-in mt-7" style={{ animationDelay: '220ms' }}>
-            <div className="divider-label mb-4">SSO · 第三方登录</div>
+            <div className="divider-label mb-4">第三方登录</div>
             <div className="grid grid-cols-2 gap-3">
               <button
                 onClick={() => handleThirdParty('GitHub')}

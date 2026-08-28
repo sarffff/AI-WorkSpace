@@ -4,6 +4,8 @@ import { PrismaModule } from './prisma/prisma.module'
 import { AuthModule } from './modules/auth/auth.module'
 import { ChatModule } from './modules/chat/chat.module'
 import { KnowledgeModule } from './modules/knowledge/knowledge.module'
+import { PromptsModule } from './modules/prompts/prompts.module'
+import { TicketsModule } from './modules/tickets/tickets.module'
 import { SettingsModule } from './modules/settings/settings.module'
 
 @Module({
@@ -14,6 +16,8 @@ import { SettingsModule } from './modules/settings/settings.module'
     SettingsModule,
     ChatModule,
     KnowledgeModule,
+    PromptsModule,
+    TicketsModule,
   ],
 })
 export class AppModule {}

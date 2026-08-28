@@ -9,6 +9,8 @@ export interface SafeUser {
   email: string
   name: string | null
   avatar: string | null
+  department: string | null
+  role: string
 }
 
 @Injectable()
@@ -28,10 +30,19 @@ export class AuthService {
     const user = existing
       ? await this.prisma.user.update({
           where: { id: existing.id },
-          data: { password: hashedPassword, name: dto.name || existing.name },
+          data: {
+            password: hashedPassword,
+            name: dto.name || existing.name,
+            department: dto.department ?? existing.department,
+          },
         })
       : await this.prisma.user.create({
-          data: { email: dto.email, password: hashedPassword, name: dto.name },
+          data: {
+            email: dto.email,
+            password: hashedPassword,
+            name: dto.name,
+            department: dto.department,
+          },
         })
 
     return this.buildAuthResponse(user)
@@ -62,6 +73,8 @@ export class AuthService {
     email: string
     name: string | null
     avatar: string | null
+    department: string | null
+    role: string
   }) {
     const token = this.jwtService.sign({ sub: user.id, email: user.email })
     return { token, user: this.toSafeUser(user) }
@@ -72,7 +85,16 @@ export class AuthService {
     email: string
     name: string | null
     avatar: string | null
+    department: string | null
+    role: string
   }): SafeUser {
-    return { id: user.id, email: user.email, name: user.name, avatar: user.avatar }
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      avatar: user.avatar,
+      department: user.department,
+      role: user.role,
+    }
   }
 }

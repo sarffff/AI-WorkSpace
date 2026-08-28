@@ -5,3 +5,9 @@ export const UserId = createParamDecorator((_data: unknown, ctx: ExecutionContex
   const request = ctx.switchToHttp().getRequest()
   return request.user?.id
 })
+
+// 取完整登录用户（含角色/部门，用于行级权限判断）
+export const CurrentUser = createParamDecorator((_data: unknown, ctx: ExecutionContext) => {
+  const request = ctx.switchToHttp().getRequest()
+  return request.user
+})

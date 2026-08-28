@@ -1,11 +1,12 @@
 {
-  "name": "@ai-workspace/server",
+  "name": "@servicedesk/server",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "build": "nest build",
     "dev": "nest start --watch",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "eval:retrieval": "nest build && node dist/src/scripts/eval-retrieval.js"
   },
   "dependencies": {
     "@langchain/openai": "^1.5.6",

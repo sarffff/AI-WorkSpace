@@ -10,7 +10,7 @@ import {
   renameChat as renameAction,
 } from '@/entities/chat/model/chatSlice'
 import { api, syncToken } from '@/shared/api/client'
-import { NavTab } from '@ai-workspace/sdk'
+import { NavTab } from '@servicedesk/sdk'
 import {
   BookOpen,
   Sparkles,
@@ -22,7 +22,16 @@ import {
   Trash2,
   Pencil,
   Activity,
+  TicketCheck,
 } from 'lucide-react'
+
+// token 数量人性化：1.2k / 3.4M
+const formatTokens = (n: number): string =>
+  n >= 1000000
+    ? `${(n / 1000000).toFixed(1)}M`
+    : n >= 1000
+      ? `${(n / 1000).toFixed(1)}k`
+      : String(n)
 
 export const Sidebar: React.FC = () => {
   const dispatch = useDispatch()
@@ -52,6 +61,7 @@ export const Sidebar: React.FC = () => {
               title: c.title,
               date: c.date,
               pinned: c.pinned,
+              tokens: c.tokens ?? { promptTokens: 0, completionTokens: 0 },
             })),
           ),
         )
@@ -64,6 +74,7 @@ export const Sidebar: React.FC = () => {
   const navItems: { id: NavTab; label: string; icon: React.ReactNode }[] = [
     { id: 'knowledge', label: '知识库', icon: <BookOpen className="w-4 h-4" /> },
     { id: 'prompts', label: '提示词', icon: <Sparkles className="w-4 h-4" /> },
+    { id: 'tickets', label: '工单', icon: <TicketCheck className="w-4 h-4" /> },
     { id: 'settings', label: '设置', icon: <Settings className="w-4 h-4" /> },
   ]
 
@@ -121,10 +132,10 @@ export const Sidebar: React.FC = () => {
           </div>
           <div>
             <h1 className="font-display font-bold text-[15px] text-t1 tracking-tight leading-none">
-              AI Workspace
+              ServiceDeck
             </h1>
             <span className="text-[10px] font-mono text-brand/80 tracking-wider mt-1 block">
-              ENTERPRISE AGENT CONSOLE
+              企业级智能服务台
             </span>
           </div>
         </div>
@@ -143,7 +154,7 @@ export const Sidebar: React.FC = () => {
 
       {/* 导航 */}
       <div className="px-4 py-2 space-y-0.5">
-        <div className="tag-telemetry text-[9px] text-t3 font-mono px-2 mb-1.5">// MODULES</div>
+        <div className="tag-telemetry text-[9px] text-t3 font-mono px-2 mb-1.5">功能模块</div>
         {navItems.map((item) => {
           const active = activeTab === item.id
           return (
@@ -167,7 +178,7 @@ export const Sidebar: React.FC = () => {
       {/* 会话列表 */}
       <div className="flex-1 overflow-y-auto px-4 py-2 mt-1">
         <div className="tag-telemetry text-[9px] text-t3 font-mono px-2 mb-1.5 flex items-center justify-between">
-          <span>// SESSIONS</span>
+          <span>会话列表</span>
           <span className="text-t4">{sorted.length.toString().padStart(2, '0')}</span>
         </div>
         <div className="space-y-0.5">
@@ -196,6 +207,20 @@ export const Sidebar: React.FC = () => {
                 />
               ) : (
                 <span className="flex-1 truncate font-medium">{chat.title}</span>
+              )}
+
+              {/* token 用量徽标：hover 操作按钮出现时隐藏；0 表示历史会话（追踪前）置灰 */}
+              {editingId !== chat.id && chat.tokens && (
+                <span
+                  className={`shrink-0 text-[9px] font-mono border border-line rounded px-1 py-px ${
+                    chat.tokens.promptTokens + chat.tokens.completionTokens > 0
+                      ? 'text-t3 bg-s2/60'
+                      : 'text-t4/60 bg-transparent'
+                  } group-hover:hidden`}
+                  title={`输入 ${formatTokens(chat.tokens.promptTokens)} · 输出 ${formatTokens(chat.tokens.completionTokens)} · 合计 ${formatTokens(chat.tokens.promptTokens + chat.tokens.completionTokens)}`}
+                >
+                  {formatTokens(chat.tokens.promptTokens + chat.tokens.completionTokens)} tok
+                </span>
               )}
 
               {editingId !== chat.id && (
@@ -243,7 +268,7 @@ export const Sidebar: React.FC = () => {
       {/* 运行时遥测面板 */}
       <div className="p-3 m-4 mt-2 rounded-xl panel space-y-2.5">
         <div className="flex items-center justify-between">
-          <span className="tag-telemetry text-[9px] text-t3 font-mono">RUNTIME</span>
+          <span className="tag-telemetry text-[9px] text-t3 font-mono">运行状态</span>
           <span className="flex items-center gap-1.5 text-[9px] font-mono text-t3">
             <span
               className={`w-1.5 h-1.5 rounded-full ${
@@ -255,26 +280,26 @@ export const Sidebar: React.FC = () => {
               }`}
             />
             {serverStatus === 'online'
-              ? 'SSE LINK UP'
+              ? '服务在线'
               : serverStatus === 'offline'
-                ? 'SSE DOWN'
-                : 'PROBING'}
+                ? '服务离线'
+                : '探测中'}
           </span>
         </div>
         <div className="text-[11px] text-t3 flex items-center justify-between">
-          <span>LLM Model</span>
+          <span>AI 模型</span>
           <span className="text-brand font-mono text-[10px] px-1.5 py-0.5 bg-brand/10 border border-brand/20 rounded max-w-[130px] truncate">
             {selectedModel}
           </span>
         </div>
         <div className="text-[11px] text-t3 flex items-center justify-between">
-          <span>Transport</span>
+          <span>通信协议</span>
           <span className="text-t2 font-mono text-[10px] px-1.5 py-0.5 bg-s3 rounded">
             HTTP · SSE
           </span>
         </div>
         <div className="text-[11px] text-t3 flex items-center justify-between">
-          <span>Persistence</span>
+          <span>数据存储</span>
           <span className="text-t2 font-mono text-[10px] px-1.5 py-0.5 bg-s3 rounded flex items-center gap-1">
             <Database className="w-2.5 h-2.5 text-brand" /> MySQL·Prisma
           </span>

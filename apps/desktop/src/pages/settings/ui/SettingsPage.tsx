@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { KeyRound, Database, Cpu, CheckCircle2, XCircle, Loader2, Save } from 'lucide-react'
-import type { AppSettings } from '@ai-workspace/sdk'
+import type { AppSettings } from '@servicedesk/sdk'
 
 import { api } from '@/shared/api/client'
 
@@ -39,7 +39,7 @@ export const SettingsPage: React.FC = () => {
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
     } catch {
-      // TODO: show error toast
+      // TODO: 展示错误提示（toast）
     } finally {
       setSaving(false)
     }
@@ -70,10 +70,7 @@ export const SettingsPage: React.FC = () => {
         {/* 页头 + 保存 */}
         <div className="flex items-end justify-between rise-in">
           <div>
-            <span className="tag-telemetry text-[9px] font-mono text-brand/70">
-              // CONTROL PANEL
-            </span>
-            <h3 className="font-display text-lg font-bold text-t1 mt-1">系统配置</h3>
+            <h3 className="font-display text-lg font-bold text-t1">系统配置</h3>
             <p className="text-xs text-t3 mt-1">
               配置持久化于 MySQL Setting 表（key-value），ChatService 每次调用时动态读取。
             </p>
@@ -115,7 +112,7 @@ export const SettingsPage: React.FC = () => {
           <div className="space-y-3.5">
             <div>
               <label className="tag-telemetry text-[9px] font-mono text-t3 mb-1.5 block">
-                API Base URL
+                接口地址
               </label>
               <input
                 type="text"
@@ -128,7 +125,7 @@ export const SettingsPage: React.FC = () => {
 
             <div>
               <label className="tag-telemetry text-[9px] font-mono text-t3 mb-1.5 block">
-                API Key
+                接口密钥
               </label>
               <input
                 type="password"
@@ -141,7 +138,7 @@ export const SettingsPage: React.FC = () => {
 
             <div>
               <label className="tag-telemetry text-[9px] font-mono text-t3 mb-1.5 block">
-                Default Model
+                默认模型
               </label>
               <input
                 type="text"

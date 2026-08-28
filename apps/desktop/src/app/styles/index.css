@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 /* ============================================================
-   AI Workspace · Operations Deck 设计底座（dark / light 双主题）
+   ServiceDeck · Operations Deck 设计底座（dark / light 双主题）
    Dark  = 深墨青机身 / 霓虹绿遥测 / 琥珀信号灯
    Light = 控制室纸白 / 墨绿主色 / 琥珀信号保留
    语义色通过 CSS 变量驱动，组件统一使用语义类

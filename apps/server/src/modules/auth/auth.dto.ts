@@ -13,6 +13,11 @@ export class RegisterDto {
   @IsString()
   @MaxLength(40, { message: '昵称过长' })
   name?: string
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(30, { message: '部门名过长' })
+  department?: string
 }
 
 // 登录请求体

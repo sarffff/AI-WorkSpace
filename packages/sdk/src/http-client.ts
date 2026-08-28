@@ -2,12 +2,27 @@ import type {
   CompletionRequest,
   CompletionResponse,
   KnowledgeDocument,
+  MessageSource,
+  PromptItem,
+  TicketItem,
+  TicketRef,
+  ToolTraceStep,
   AppSettings,
   AuthResponse,
   AuthUser,
-} from '@ai-workspace/types'
+} from '@servicedesk/types'
 
-export type StreamChunk = { content?: string; done?: boolean; error?: string }
+export type StreamChunk = {
+  content?: string
+  done?: boolean
+  error?: string
+  /** RAG 引用溯源（先于正文到达） */
+  sources?: MessageSource[]
+  /** Agent 工具调用轨迹 */
+  tool?: ToolTraceStep
+  /** Agent 自动创建的工单 */
+  ticket?: TicketRef
+}
 
 // 401 → 通知全局登出（Redux 侧通过监听该事件清空登录态）
 export const AUTH_UNAUTHORIZED_EVENT = 'auth:unauthorized'
@@ -28,6 +43,8 @@ export interface ServerChatSession {
   pinned: boolean
   date: string
   preview?: string
+  /** 会话累计 LLM token 用量（服务端聚合） */
+  tokens?: { promptTokens: number; completionTokens: number }
 }
 
 export interface ServerMessage {
@@ -36,6 +53,7 @@ export interface ServerMessage {
   role: string
   content: string
   model?: string
+  sources?: MessageSource[] | null
   createdAt: string
 }
 
@@ -77,7 +95,12 @@ export class HttpClient {
   // ===== 认证 =====
 
   // 注册新用户，返回 token + 用户信息
-  async register(input: { email: string; password: string; name?: string }): Promise<AuthResponse> {
+  async register(input: {
+    email: string
+    password: string
+    name?: string
+    department?: string
+  }): Promise<AuthResponse> {
     return this.request<AuthResponse>('/auth/register', {
       method: 'POST',
       body: JSON.stringify(input),
@@ -152,10 +175,15 @@ export class HttpClient {
     return this.request<KnowledgeDocument[]>('/knowledge/documents')
   }
 
-  // 上传文档到知识库（自动切块 + 向量化）
-  async uploadDocument(file: File | Blob, filename: string): Promise<KnowledgeDocument> {
+  // 上传文档到知识库（自动切块 + 向量化；department 非空 = 共享至本部门）
+  async uploadDocument(
+    file: File | Blob,
+    filename: string,
+    department?: string,
+  ): Promise<KnowledgeDocument> {
     const form = new FormData()
     form.append('file', file, filename)
+    if (department) form.append('department', department)
     const res = await fetch(`${this.baseUrl}/knowledge/documents`, {
       method: 'POST',
       headers: { Authorization: this.authHeaders()['Authorization'] || '' },
@@ -205,6 +233,76 @@ export class HttpClient {
       method: 'PATCH',
       body: JSON.stringify(settings),
     })
+  }
+
+  // ===== 提示词管理 =====
+
+  // 当前用户的提示词列表（首次访问自动初始化预设）
+  async listPrompts(): Promise<PromptItem[]> {
+    return this.request<PromptItem[]>('/prompts')
+  }
+
+  // 新建提示词
+  async createPrompt(input: {
+    title: string
+    content: string
+    category?: string
+  }): Promise<PromptItem> {
+    return this.request<PromptItem>('/prompts', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+  }
+
+  // 更新提示词
+  async updatePrompt(
+    id: string,
+    input: { title: string; content: string; category?: string },
+  ): Promise<PromptItem> {
+    return this.request<PromptItem>(`/prompts/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    })
+  }
+
+  // 删除提示词
+  async deletePrompt(id: string): Promise<void> {
+    await this.request<unknown>(`/prompts/${id}`, { method: 'DELETE' })
+  }
+
+  // ===== 工单管理 =====
+
+  // 工单列表（员工只看自己的，坐席/管理员看全部）
+  async listTickets(): Promise<TicketItem[]> {
+    return this.request<TicketItem[]>('/tickets')
+  }
+
+  // 创建工单
+  async createTicket(input: {
+    title: string
+    content: string
+    priority?: string
+  }): Promise<TicketItem> {
+    return this.request<TicketItem>('/tickets', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+  }
+
+  // 更新工单（状态/优先级/受理人；权限由服务端校验）
+  async updateTicket(
+    id: string,
+    input: { status?: string; priority?: string; assigneeId?: string | null },
+  ): Promise<TicketItem> {
+    return this.request<TicketItem>(`/tickets/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    })
+  }
+
+  // 删除工单
+  async deleteTicket(id: string): Promise<void> {
+    await this.request<unknown>(`/tickets/${id}`, { method: 'DELETE' })
   }
 
   // 流式发消息 — 返回 AsyncGenerator，逐 chunk 消费

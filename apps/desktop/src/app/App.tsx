@@ -4,13 +4,14 @@ import { RootState } from './providers/store'
 import { ThemeProvider } from './providers/ThemeContext'
 import { logout } from '@/entities/auth/model/authSlice'
 import { api } from '@/shared/api/client'
-import { AUTH_UNAUTHORIZED_EVENT } from '@ai-workspace/sdk'
+import { AUTH_UNAUTHORIZED_EVENT } from '@servicedesk/sdk'
 import { Sidebar } from '@/widgets/sidebar/ui/Sidebar'
 import { Header } from '@/widgets/header/ui/Header'
 import { AuthPage } from '@/pages/auth/ui/AuthPage'
 import { ChatPage } from '@/pages/chat/ui/ChatPage'
 import { KnowledgePage } from '@/pages/knowledge/ui/KnowledgePage'
 import { PromptsPage } from '@/pages/prompts/ui/PromptsPage'
+import { TicketsPage } from '@/pages/tickets/ui/TicketsPage'
 import { SettingsPage } from '@/pages/settings/ui/SettingsPage'
 
 function Workspace() {
@@ -24,6 +25,8 @@ function Workspace() {
         return <KnowledgePage />
       case 'prompts':
         return <PromptsPage />
+      case 'tickets':
+        return <TicketsPage />
       case 'settings':
         return <SettingsPage />
       default:

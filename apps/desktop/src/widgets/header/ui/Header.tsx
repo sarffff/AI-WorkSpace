@@ -34,13 +34,14 @@ export const Header: React.FC = () => {
     return () => document.removeEventListener('mousedown', onClick)
   }, [menuOpen])
 
-  const models = ['glm-4.5-air', 'gpt-6', 'Claude-Opus-5', 'DeepSeek-V4', 'Gemini-3.5-Pro']
+  const models = ['glm-4.5-air', 'glm-4.6v', 'glm-4.7', 'DeepSeek-V4-flash']
 
-  const modules: Record<string, { code: string; title: string; sub: string }> = {
-    chat: { code: '01', title: '智能对话', sub: 'STREAM CONSOLE' },
-    knowledge: { code: '02', title: '知识库', sub: 'RAG PIPELINE' },
-    prompts: { code: '03', title: '提示词', sub: 'PROMPT HUB' },
-    settings: { code: '04', title: '系统配置', sub: 'CONTROL PANEL' },
+  const modules: Record<string, { code: string; title: string }> = {
+    chat: { code: '01', title: '智能对话' },
+    knowledge: { code: '02', title: '知识库' },
+    prompts: { code: '03', title: '提示词' },
+    tickets: { code: '04', title: '工单服务台' },
+    settings: { code: '05', title: '系统配置' },
   }
 
   const mod = modules[activeTab] || modules.chat
@@ -54,13 +55,12 @@ export const Header: React.FC = () => {
     <header className="h-14 relative z-10 border-b border-line bg-s1 backdrop-blur px-6 flex items-center justify-between select-none">
       <div className="flex items-center gap-3 rise-in">
         <span className="font-mono text-[10px] text-brand/80 bg-brand/5 border border-brand/15 rounded px-1.5 py-0.5">
-          MOD·{mod.code}
+          模块 {mod.code}
         </span>
         <div className="flex items-baseline gap-2.5">
           <h2 className="font-display text-[15px] font-semibold text-t1 tracking-tight">
             {mod.title}
           </h2>
-          <span className="tag-telemetry text-[9px] font-mono text-t3">{mod.sub}</span>
         </div>
         <span className="text-[9px] font-mono px-1.5 py-0.5 rounded border border-line text-t3">
           v{appVersion}
@@ -101,11 +101,7 @@ export const Header: React.FC = () => {
               online ? 'bg-brand pulse-dot' : checking ? 'bg-signal' : 'bg-rose-400 pulse-dot-red'
             }`}
           />
-          {online
-            ? `API ONLINE · ${sessions.length} CHATS`
-            : checking
-              ? 'PROBING...'
-              : 'API OFFLINE'}
+          {online ? `服务在线 · ${sessions.length} 个会话` : checking ? '探测中...' : '服务离线'}
         </div>
 
         {/* 主题切换 */}
@@ -153,7 +149,7 @@ export const Header: React.FC = () => {
               <div className="p-1.5">
                 <div className="px-2.5 py-1.5 flex items-center gap-2 text-[10px] font-mono text-t4">
                   <CircleUserRound className="w-3 h-3" />
-                  OPERATOR ID · {user?.id?.slice(0, 8) ?? '--------'}
+                  用户编号 · {user?.id?.slice(0, 8) ?? '--------'}
                 </div>
                 <button
                   onClick={() => {

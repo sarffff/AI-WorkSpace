@@ -1,5 +1,5 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit'
-import type { AuthUser } from '@ai-workspace/sdk'
+import type { AuthUser } from '@servicedesk/sdk'
 
 const TOKEN_KEY = 'auth_token'
 const USER_KEY = 'auth_user'
@@ -33,7 +33,7 @@ export const authSlice = createSlice({
         localStorage.setItem(TOKEN_KEY, action.payload.token)
         localStorage.setItem(USER_KEY, JSON.stringify(action.payload.user))
       } catch {
-        // ignore
+        // 本地存储不可用时忽略
       }
     },
     logout: (state) => {
@@ -43,7 +43,7 @@ export const authSlice = createSlice({
         localStorage.removeItem(TOKEN_KEY)
         localStorage.removeItem(USER_KEY)
       } catch {
-        // ignore
+        // 本地存储不可用时忽略
       }
     },
   },

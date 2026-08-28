@@ -11,6 +11,8 @@ export interface AuthUser {
   email: string
   name: string | null
   avatar: string | null
+  department?: string | null
+  role?: string // employee | agent | admin
 }
 
 export interface AuthResponse {
@@ -23,9 +25,33 @@ export interface ChatSession {
   title: string
   date: string
   pinned: boolean
+  /** 会话累计 LLM token 用量（服务端聚合，仅新会话接口返回） */
+  tokens?: { promptTokens: number; completionTokens: number }
 }
 
 // ===== 消息管理 =====
+export interface MessageSource {
+  documentId: string
+  documentName: string
+  /** 结构切块记录的章节路径（如 "VPN 排查 > 连接失败"） */
+  sectionPath?: string | null
+  content: string
+  score: number
+}
+
+/** Agent 工具调用轨迹（检索/建单过程可视化） */
+export interface ToolTraceStep {
+  tool: 'search_knowledge' | 'create_ticket' | string
+  status: 'start' | 'done'
+  summary?: string
+}
+
+/** Agent 自动创建的工单引用 */
+export interface TicketRef {
+  id: string
+  title: string
+}
+
 export interface Message {
   id: string
   sessionId: string
@@ -33,15 +59,61 @@ export interface Message {
   content: string
   timestamp: string
   model?: string
+  sources?: MessageSource[]
+  toolTrace?: ToolTraceStep[]
+  ticketRef?: TicketRef | null
 }
 
 // ===== 知识库管理 =====
+
+/** 异步索引进度（上传后后台流水线状态，前端轮询） */
+export interface IndexProgress {
+  stage: 'queued' | 'extracting' | 'chunking' | 'embedding' | 'storing' | 'done' | 'failed'
+  percent: number
+  chunks?: number
+  error?: string
+}
+
 export interface KnowledgeDocument {
   id: string
   name: string
   size: number
   chunks: number
   status: string
+  /** 非空 = 已共享至该部门 */
+  department?: string | null
+  ownerId?: string
+  /** 处理中的文档附带的流水线进度 */
+  progress?: IndexProgress
+}
+
+// ===== 工单管理 =====
+export interface TicketUserBrief {
+  id: string
+  name: string | null
+  email: string
+}
+
+export interface TicketItem {
+  id: string
+  title: string
+  content: string
+  status: 'open' | 'processing' | 'resolved' | 'closed'
+  priority: 'low' | 'normal' | 'high' | 'urgent'
+  creator: TicketUserBrief
+  assignee: TicketUserBrief | null
+  createdAt: string
+  updatedAt: string
+}
+
+// ===== 提示词管理 =====
+export interface PromptItem {
+  id: string
+  title: string
+  content: string
+  category: string
+  createdAt: string
+  updatedAt: string
 }
 
 // ===== 完成请求管理 =====
@@ -49,6 +121,8 @@ export interface CompletionRequest {
   prompt: string
   model?: string
   useRag?: boolean
+  /** 注入的 system 角色提示词（来自提示词广场「一键注入」） */
+  systemPrompt?: string
 }
 
 // ===== 完成响应管理 =====
@@ -58,4 +132,4 @@ export interface CompletionResponse {
 }
 
 // ===== 导航标签管理 =====
-export type NavTab = 'chat' | 'knowledge' | 'prompts' | 'settings'
+export type NavTab = 'chat' | 'knowledge' | 'prompts' | 'tickets' | 'settings'

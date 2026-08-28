@@ -1,4 +1,4 @@
-import { HttpClient } from '@ai-workspace/sdk'
+import { HttpClient } from '@servicedesk/sdk'
 
 // 全局共享的 HTTP 客户端，api.token 与登录态保持同步
 export const api = new HttpClient('http://localhost:3000')
@@ -18,7 +18,7 @@ try {
   }
   api.token = localStorage.getItem('auth_token')
 } catch {
-  // ignore
+  // 本地存储不可用时忽略
 }
 
 // 组件在拿到 token 后调用，确保后续请求携带最新凭证

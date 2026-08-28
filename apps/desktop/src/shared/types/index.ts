@@ -5,4 +5,4 @@ export type {
   CompletionRequest,
   CompletionResponse,
   NavTab,
-} from '@ai-workspace/sdk'
+} from '@servicedesk/sdk'
