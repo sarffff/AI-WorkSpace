@@ -21,17 +21,31 @@ export interface TicketRef {
   title: string
 }
 
+// 建单确认事件：Agent 决定建单 → 推草稿给用户 → 暂停等待确认/取消
+export interface TicketDraft {
+  requestId: string
+  title: string
+  content: string
+  priority: string
+}
+
 export type AgentStreamEvent =
   | { type: 'tool'; step: ToolTraceStep }
   | { type: 'ticket'; ticket: TicketRef }
   | { type: 'sources'; sources: RagHit[] }
   | { type: 'content'; text: string }
+  | { type: 'confirm_required'; draft: TicketDraft }
+
+// HITL 待确认请求注册表：requestId → resolve(approved)
+// （内存态即可：确认窗口与 SSE 连接同生命周期，断连即清理）
+type ConfirmResolver = (approved: boolean) => void
 
 // Agent 模式人设：说明工具使用策略（检索优先、超范围升级工单）与引用输出格式
 const AGENT_PERSONA = `你是 ServiceDeck 智能服务台的 IT 支持助手，可以调用工具完成任务，请遵守以下策略：
 1. 遇到 IT、企业制度、流程类问题，先调用 search_knowledge 检索知识库，依据检索到的内容回答；
 2. 检索后仍无法解答，或问题需要人工处理（如账号重置、权限变更、硬件更换），调用 create_ticket 为用户创建工单，并告知工单标题；
-3. 通用编程、写作等与企业管理无关的问题可直接回答。
+3. 通用编程、写作等与企业管理无关的问题可直接回答；
+4. 用户问题描述模糊、缺少关键信息（如具体设备、报错信息、账号、时间范围）时，先向用户提出 1-2 个针对性澄清问题，获得补充信息后再检索或建单，不要在信息不足时直接创建工单。
 引用格式：依据知识库内容回答时，在依据处用 [n] 脚注标注（n 为片段序号），回答末尾列出引用列表：
 [1] 来源: 文档名 · 章节路径
 [2] 来源: 文档名 · 章节路径
@@ -53,6 +67,10 @@ function estimateTokens(text: string): number {
 @Injectable()
 export class ChatService {
   private readonly logger = new Logger(ChatService.name)
+
+  // HITL 建单确认：pending 请求表（requestId → resolver）
+  // 与 SSE 连接同生命周期：断连清理，无需持久化
+  private readonly pendingConfirms = new Map<string, ConfirmResolver>()
 
   constructor(
     private prisma: PrismaService,
@@ -252,6 +270,21 @@ ${context}`,
   // 手动刷新会话 updatedAt（@updatedAt 只在直接 update Chat 时生效）
   private async touchChat(chatId: string) {
     await this.prisma.chat.update({ where: { id: chatId }, data: { updatedAt: new Date() } })
+  }
+
+  // 客户端中断流后保存半成品回答（标记中止，前端续接"已停止"状态）
+  private async savePartialMessage(chatId: string, partial: string) {
+    try {
+      // 幂等：run 生成器正常完成路径已保存完整回答，此处仅在 abort 后补充
+      await this.prisma.message.create({
+        data: { chatId, role: 'assistant', content: partial + '\n\n_[已中断]_ ' },
+      })
+      await this.touchChat(chatId)
+    } catch (err) {
+      this.logger.warn(
+        `save partial message failed: chat=${chatId}, ${err instanceof Error ? err.message : 'unknown'}`,
+      )
+    }
   }
 
   // 上下文工程：跨会话长期记忆 → 会话摘要 → token 预算内最近的对话历史
@@ -467,16 +500,23 @@ ${context}`,
   // 执行单个工具调用，返回给模型的结果 + 前端轨迹摘要 + 溯源/工单副产物
   // 防御幻觉参数：白名单只取 schema 定义的字段；类型不符 → 返回结构化错误让模型
   // 下一轮修正（重试闭环），而非静默兜底产生 "[object Object]" 之类的脏数据
+  // registerConfirm：HITL 确认门 —— create_ticket 校验通过后调用，注册 pending
+  // 并返回 needsConfirm=true；实际建单由调用方（生成器层）在用户确认后执行
   private async execTool(
     owner: { id: string; role: string; department: string | null },
     name: string,
     args: Record<string, unknown>,
-    opts: { createdTicket?: TicketRef; chatId?: string } = {},
+    opts: {
+      createdTicket?: TicketRef
+      chatId?: string
+      registerConfirm?: (draft: { title: string; content: string; priority: string }) => void
+    } = {},
   ): Promise<{
     result: unknown
     summary: string
     sources?: RagHit[]
     ticket?: TicketRef
+    needsConfirm?: boolean
   }> {
     try {
       // 整体守卫：参数可能是 null/字符串/数组等非对象（模型幻觉），统一按参数错误处理
@@ -541,6 +581,15 @@ ${context}`,
         const priority = ['low', 'normal', 'high', 'urgent'].includes(args.priority as string)
           ? (args.priority as string)
           : 'normal'
+        // HITL 确认门：参数校验通过后交由生成器层确认（yield 事件只能在生成器内发生）
+        if (opts.registerConfirm) {
+          opts.registerConfirm({ title, content, priority })
+          return {
+            result: null, // 占位：确认后由生成器层直接建单，不走本分支的建单逻辑
+            summary: '等待用户确认',
+            needsConfirm: true,
+          }
+        }
         const ticket = await this.ticketsService.create(owner.id, {
           title,
           content,
@@ -566,6 +615,26 @@ ${context}`,
       const message = err instanceof Error ? err.message : '工具执行失败'
       this.logger.error(`tool ${name} failed: ${message}`)
       return { result: { error: message }, summary: `执行失败` }
+    }
+  }
+
+  // ===== HITL 建单确认 =====
+
+  // 用户对建单请求做出决定（前端确认卡调用）；未知/已处理请求返回 false
+  resolveConfirm(requestId: string, approved: boolean): boolean {
+    const resolver = this.pendingConfirms.get(requestId)
+    if (!resolver) return false
+    this.pendingConfirms.delete(requestId)
+    resolver(approved)
+    return true
+  }
+
+  // 撤销 pending 确认（SSE 断连时调用，按 canceled 处理）
+  private cancelConfirm(requestId: string) {
+    const resolver = this.pendingConfirms.get(requestId)
+    if (resolver) {
+      this.pendingConfirms.delete(requestId)
+      resolver(false)
     }
   }
 
@@ -643,10 +712,97 @@ ${context}`,
           yield { type: 'tool', step: { tool: fname, status: 'start' } }
           const toolStartedAt = Date.now()
           // createdTicket 传入实现建单幂等（同一会话不重复建单）；chatId 用于工单记忆溯源
-          const { result, summary, sources, ticket } = await this.execTool(owner, fname, args, {
-            createdTicket,
-            chatId,
-          })
+          // HITL 确认门：execTool 返回 needsConfirm + 草稿 → 生成器推 confirm_required 事件
+          // （yield 只能发生在生成器内，故确认事件由本层发射，execTool 仅回传草稿）
+          let pendingDraft: TicketDraft | null = null
+          let confirmDecision: Promise<boolean> | null = null
+          const { result, summary, sources, ticket, needsConfirm } = await this.execTool(
+            owner,
+            fname,
+            args,
+            {
+              createdTicket,
+              chatId,
+              // 确认门：注册 pending → 由生成器先推事件再 await 用户决定
+              registerConfirm: (draft) => {
+                const requestId = `${chatId}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
+                const decision = new Promise<boolean>((resolve) => {
+                  this.pendingConfirms.set(requestId, resolve)
+                })
+                confirmDecision = decision
+                pendingDraft = { requestId, ...draft }
+              },
+            },
+          )
+          // 生成器内推确认事件并阻塞（普通 async 无法 yield，事件必须在此发射）
+          if (needsConfirm && pendingDraft && confirmDecision) {
+            yield { type: 'confirm_required', draft: pendingDraft }
+            const approved = await confirmDecision
+            this.logger.log(
+              JSON.stringify({
+                chatId,
+                userId: owner.id,
+                requestId: pendingDraft.requestId,
+                event: 'ticket-confirm',
+                approved,
+              }),
+            )
+            if (!approved) {
+              // 用户拒绝：不建单，结构化结果回传模型（转述原因，勿重复建单）
+              toolCallsTotal++
+              yield {
+                type: 'tool',
+                step: { tool: fname, status: 'done', summary: '用户已拒绝建单' },
+              }
+              messages.push({
+                role: 'tool',
+                tool_call_id: call.id,
+                content: JSON.stringify({
+                  message:
+                    '用户拒绝了本次工单创建，请勿再次调用 create_ticket。请向用户说明未建单，并询问是否需要补充信息或改用其他方式解决。',
+                }),
+              })
+              continue
+            }
+            // 用户确认：实际建单（草稿已在 execTool 校验/裁剪）
+            const created = await this.ticketsService.create(owner.id, {
+              title: pendingDraft.title,
+              content: pendingDraft.content,
+              priority: pendingDraft.priority,
+              source: 'agent',
+            })
+            await this.memoryService.remember(
+              owner.id,
+              'ticket',
+              `于 ${new Date().toLocaleDateString('zh-CN')} 创建工单「${created.title}」，单号 ${created.id.slice(0, 8)}`,
+              chatId,
+            )
+            createdTicket = { id: created.id, title: created.title }
+            toolCallsTotal++
+            this.logger.log(
+              JSON.stringify({
+                chatId,
+                userId: owner.id,
+                tool: fname,
+                ms: Date.now() - toolStartedAt,
+                summary: `"${created.title}"`,
+              }),
+            )
+            messages.push({
+              role: 'tool',
+              tool_call_id: call.id,
+              content: JSON.stringify({
+                ticketId: created.id,
+                title: created.title,
+                status: '已创建，等待坐席受理',
+              }),
+            })
+            yield {
+              type: 'tool',
+              step: { tool: fname, status: 'done', summary: `"${created.title}"` },
+            }
+            continue
+          }
           this.logger.log(
             JSON.stringify({
               chatId,
@@ -680,7 +836,8 @@ ${context}`,
         } else if (roundEmptySearch) {
           messages.push({
             role: 'user',
-            content: '注意：知识库未检索到相关内容。请直接回答用户或创建工单，不要再重复检索。',
+            content:
+              '注意：知识库未检索到相关内容。若用户问题缺少关键信息（设备、报错、账号等），请直接向用户提出澄清问题；信息充分且确需人工处理时再创建工单，不要重复检索。',
           })
         }
       }
@@ -777,7 +934,27 @@ ${context}`,
       )
     }.bind(this)
 
-    return { stream: run() }
+    // 外层守卫：客户端断连（controller 触发 generator.return()）时保存半成品回答，
+    // 避免已生成的正文/引用/工单引用丢失（工具副作用如建单已发生，不可回滚）
+    const guarded = async function* (this: ChatService): AsyncGenerator<AgentStreamEvent> {
+      let partialReply = ''
+      let completed = false
+      try {
+        for await (const evt of run) {
+          if (evt.type === 'content') partialReply += evt.text
+          yield evt
+        }
+        // run 正常耗尽 = 完整回答已在生成器内部保存，无需补存
+        completed = true
+      } finally {
+        // 仅中断路径（generator.return()）：保存半截内容供续看
+        if (!completed && partialReply.trim()) {
+          await this.savePartialMessage(chatId, partialReply)
+        }
+      }
+    }.bind(this)
+
+    return { stream: guarded() }
   }
 
   // 周期性后台提取用户长期偏好记忆（每 10 条消息触发一次，失败仅告警）

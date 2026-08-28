@@ -11,7 +11,7 @@ import {
   UseGuards,
 } from '@nestjs/common'
 import { Response } from 'express'
-import { ChatService } from './chat.service'
+import { ChatService, AgentStreamEvent } from './chat.service'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { UserId } from '../auth/user-id.decorator'
 
@@ -96,17 +96,29 @@ export class ChatController {
     res.setHeader('Connection', 'keep-alive')
     res.setHeader('X-Accel-Buffering', 'no')
 
+    // 客户端断连（用户点停止/关窗口）即终止生成器：
+    // 阶段一工具循环期间无事件输出，仅靠事件间检查会继续执行工具调用（含建单副作用）与 token 消耗
+    let clientGone = false
+    let stream: AsyncGenerator<AgentStreamEvent> | null = null
+    res.on('close', () => {
+      clientGone = true
+      // 立即向生成器注入 return：下一个 await 恢复点即终止，finally 保存半成品回答
+      void stream?.return(undefined as never).catch(() => {})
+    })
+
     try {
       await this.chatService.assertOwned(userId, id)
-      const { stream } = await this.chatService.startStream(
+      const started = await this.chatService.startStream(
         id,
         body.prompt,
         body.model,
         body.useRag,
         body.systemPrompt,
       )
-      // Agent 事件流：工具轨迹 / 工单 / 引用溯源 均先于正文 token 推送
+      stream = started.stream
+      // Agent 事件流：工具轨迹 / 确认请求 / 工单 / 引用溯源 均先于正文 token 推送
       for await (const evt of stream) {
+        if (clientGone) break
         if (evt.type === 'content') {
           res.write(`data: ${JSON.stringify({ content: evt.text })}\n\n`)
         } else if (evt.type === 'sources') {
@@ -115,13 +127,32 @@ export class ChatController {
           res.write(`data: ${JSON.stringify({ tool: evt.step })}\n\n`)
         } else if (evt.type === 'ticket') {
           res.write(`data: ${JSON.stringify({ ticket: evt.ticket })}\n\n`)
+        } else if (evt.type === 'confirm_required') {
+          res.write(`data: ${JSON.stringify({ confirm: evt.draft })}\n\n`)
         }
       }
+      stream = null
       res.write(`data: ${JSON.stringify({ done: true })}\n\n`)
     } catch (err) {
       res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`)
     } finally {
       res.end()
     }
+  }
+
+  // HITL 建单确认：用户在确认卡上选择后调用，恢复/终止挂起的 Agent 循环
+  @Post(':id/confirm-ticket')
+  async confirmTicket(
+    @UserId() userId: string,
+    @Param('id') id: string,
+    @Body() body: { requestId: string; approved: boolean },
+  ) {
+    // 确认请求属于当前用户会话（requestId 内嵌 chatId，双重校验归属）
+    if (!body?.requestId || !body.requestId.startsWith(`${id}:`)) {
+      return { success: false, message: '确认请求与当前会话不匹配' }
+    }
+    await this.chatService.assertOwned(userId, id)
+    const resolved = this.chatService.resolveConfirm(body.requestId, body.approved)
+    return { success: resolved }
   }
 }

@@ -22,7 +22,13 @@ import {
 } from '@/entities/chat/model/chatSlice'
 import { api, syncToken } from '@/shared/api/client'
 import { TicketDetailModal } from '@/widgets/ticket-detail/ui/TicketDetailModal'
-import type { MessageSource, PromptItem, TicketRef, ToolTraceStep } from '@servicedesk/sdk'
+import type {
+  MessageSource,
+  PromptItem,
+  TicketDraft,
+  TicketRef,
+  ToolTraceStep,
+} from '@servicedesk/sdk'
 import {
   Send,
   Bot,
@@ -39,9 +45,18 @@ import {
   TicketCheck,
   Check,
   Loader2,
+  ShieldQuestion,
 } from 'lucide-react'
 
 const FLUSH_INTERVAL = 60
+
+// 优先级徽标（建单确认卡）
+const PRIORITY_LABEL: Record<string, string> = {
+  low: '低',
+  normal: '普通',
+  high: '高',
+  urgent: '紧急',
+}
 
 // Markdown 渲染组件，用于 AI 消息
 const MarkdownMessage: React.FC<{ content: string }> = ({ content }) => (
@@ -255,6 +270,69 @@ const TicketNotice: React.FC<{ ticket: TicketRef; onOpen: () => void }> = ({ tic
   )
 }
 
+// HITL 建单确认卡：Agent 暂停中，用户决定是否创建该工单
+const TicketConfirmCard: React.FC<{
+  draft: TicketDraft & { resolved: boolean; approved?: boolean }
+  onDecide: (approved: boolean) => void
+}> = ({ draft, onDecide }) => {
+  const [busy, setBusy] = useState(false)
+  const pr = PRIORITY_LABEL[draft.priority] || '普通'
+
+  const decide = async (approved: boolean) => {
+    if (busy || draft.resolved) return
+    setBusy(true)
+    try {
+      await onDecide(approved)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="mt-3 p-4 rounded-xl border border-signal/30 bg-signal/[0.06] fade-in">
+      <div className="flex items-center gap-2.5 mb-3">
+        <div className="w-8 h-8 rounded-lg bg-signal/10 border border-signal/25 text-signal flex items-center justify-center shrink-0">
+          <ShieldQuestion className="w-4 h-4" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-[10px] font-mono text-signal/80 tracking-wider">
+            确认创建工单 · 优先级 {pr}
+          </p>
+          <p className="text-xs text-t1 font-semibold truncate">{draft.title}</p>
+        </div>
+      </div>
+      <p className="text-[11px] text-t3 leading-relaxed line-clamp-4 whitespace-pre-wrap">
+        {draft.content}
+      </p>
+      <div className="flex items-center justify-end gap-2 mt-3.5">
+        {draft.resolved ? (
+          <span className="text-[10px] font-mono text-t4">
+            {draft.approved ? '已确认创建' : '已拒绝，AI 将继续对话'}
+          </span>
+        ) : (
+          <>
+            <button
+              onClick={() => decide(false)}
+              disabled={busy}
+              className="px-3.5 py-1.5 rounded-lg text-t3 hover:text-t1 text-[11px] font-mono border border-line hover:border-linestrong transition-colors disabled:opacity-50"
+            >
+              暂不创建
+            </button>
+            <button
+              onClick={() => decide(true)}
+              disabled={busy}
+              className="px-4 py-1.5 rounded-lg bg-signal/15 hover:bg-signal/25 border border-signal/40 hover:border-signal/60 text-signal text-[11px] font-mono transition-colors disabled:opacity-50 flex items-center gap-1.5"
+            >
+              {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+              确认创建
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // 空状态的建议提问
 const SUGGESTIONS = [
   '解释 Monorepo 与 Turborepo 的增量构建原理',
@@ -275,10 +353,25 @@ export const ChatPage: React.FC = () => {
   const [promptList, setPromptList] = useState<PromptItem[]>([])
   const [liveTrace, setLiveTrace] = useState<ToolTraceStep[]>([])
   const [ticketDetailId, setTicketDetailId] = useState<string | null>(null)
+  // HITL 建单确认卡（Agent 暂停中等待用户决定）
+  const [confirmDraft, setConfirmDraft] = useState<
+    (TicketDraft & { resolved: boolean; approved?: boolean }) | null
+  >(null)
   const pickerRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // 用户对建单确认卡做出决定 → 恢复挂起的 Agent 循环（服务端继续生成）
+  const handleConfirmDecision = async (approved: boolean) => {
+    if (!confirmDraft || confirmDraft.resolved || !currentChatId) return
+    try {
+      await api.confirmTicket(currentChatId, confirmDraft.requestId, approved)
+      setConfirmDraft({ ...confirmDraft, resolved: true, approved })
+    } catch {
+      // 失败保持可重试（不标记 resolved）
+    }
+  }
 
   // 提示词选择器：打开时按需拉取列表
   useEffect(() => {
@@ -431,6 +524,8 @@ export const ChatPage: React.FC = () => {
 
       const userMsg = input.trim()
       setInput('')
+      // 新一轮提问：清空上一轮的建单确认卡
+      setConfirmDraft(null)
 
       const ts = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       dispatch(
@@ -487,6 +582,11 @@ export const ChatPage: React.FC = () => {
           // Agent 自动创建的工单引用
           if (chunk.ticket) {
             pendingTicket = chunk.ticket
+          }
+
+          // HITL 建单确认请求：Agent 暂停等待用户决定 → 渲染确认卡
+          if (chunk.confirm) {
+            setConfirmDraft({ ...chunk.confirm, resolved: false })
           }
 
           if (chunk.error) {
@@ -704,6 +804,18 @@ export const ChatPage: React.FC = () => {
                   </div>
                 </div>
               ),
+            )}
+
+            {/* HITL 建单确认卡：Agent 暂停中等待用户决定（决定后继续生成） */}
+            {confirmDraft && (
+              <div className="flex items-start gap-3 fade-in">
+                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-400/90 to-teal-600/90 flex items-center justify-center shrink-0">
+                  <Bot className="w-4 h-4 text-brand-on" />
+                </div>
+                <div className="pt-1 flex-1 min-w-0">
+                  <TicketConfirmCard draft={confirmDraft} onDecide={handleConfirmDecision} />
+                </div>
+              </div>
             )}
 
             {/* 思考中：Agent 轨迹实时展示 + 推理指示 */}

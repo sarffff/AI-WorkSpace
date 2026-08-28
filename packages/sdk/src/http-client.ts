@@ -10,6 +10,7 @@ import type {
   TicketDetail,
   TicketCommentItem,
   TicketStats,
+  TicketDraft,
   ToolTraceStep,
   AppSettings,
   AuthResponse,
@@ -26,6 +27,8 @@ export type StreamChunk = {
   tool?: ToolTraceStep
   /** Agent 自动创建的工单 */
   ticket?: TicketRef
+  /** HITL 建单确认请求（Agent 暂停等待用户决定） */
+  confirm?: TicketDraft
 }
 
 // 401 → 通知全局登出（Redux 侧通过监听该事件清空登录态）
@@ -298,6 +301,15 @@ export class HttpClient {
   // 坐席看板统计（偏转率/SLA/响应时长，仅坐席/管理员；days 范围 1-90）
   async getTicketStats(days = 30): Promise<TicketStats> {
     return this.request<TicketStats>(`/tickets/stats?days=${days}`)
+  }
+
+  // HITL 建单确认：恢复挂起的 Agent 循环（approved=false 则跳过建单）
+  async confirmTicket(chatId: string, requestId: string, approved: boolean): Promise<boolean> {
+    const res = await this.request<{ success: boolean }>(`/chats/${chatId}/confirm-ticket`, {
+      method: 'POST',
+      body: JSON.stringify({ requestId, approved }),
+    })
+    return res.success
   }
 
   // 工单详情（含评论 + 系统事件时间线）

@@ -113,6 +113,14 @@ export interface TicketCommentItem {
   createdAt: string
 }
 
+/** HITL 建单确认草稿（Agent 决定建单后推给用户确认） */
+export interface TicketDraft {
+  requestId: string
+  title: string
+  content: string
+  priority: 'low' | 'normal' | 'high' | 'urgent' | string
+}
+
 /** 工单详情（含完整时间线） */
 export interface TicketDetail extends TicketItem {
   comments: TicketCommentItem[]
