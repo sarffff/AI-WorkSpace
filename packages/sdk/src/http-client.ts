@@ -9,6 +9,7 @@ import type {
   TicketStaff,
   TicketDetail,
   TicketCommentItem,
+  TicketStats,
   ToolTraceStep,
   AppSettings,
   AuthResponse,
@@ -292,6 +293,11 @@ export class HttpClient {
   // 可分派坐席列表（转派下拉数据源）
   async listTicketStaff(): Promise<TicketStaff[]> {
     return this.request<TicketStaff[]>('/tickets/staff')
+  }
+
+  // 坐席看板统计（偏转率/SLA/响应时长，仅坐席/管理员；days 范围 1-90）
+  async getTicketStats(days = 30): Promise<TicketStats> {
+    return this.request<TicketStats>(`/tickets/stats?days=${days}`)
   }
 
   // 工单详情（含评论 + 系统事件时间线）

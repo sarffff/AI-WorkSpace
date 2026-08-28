@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common'
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common'
 import { TicketsService } from './tickets.service'
 import { CreateTicketDto, CreateTicketCommentDto, UpdateTicketDto } from './tickets.dto'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
@@ -20,6 +20,13 @@ export class TicketsController {
   @Get('staff')
   listStaff() {
     return this.ticketsService.listStaff()
+  }
+
+  // 坐席看板统计（偏转率/SLA/响应时长，仅坐席/管理员）
+  @Get('stats')
+  stats(@CurrentUser() user: SafeUser, @Query('days') days?: string) {
+    const d = Math.min(Math.max(parseInt(days || '30', 10) || 30, 1), 90)
+    return this.ticketsService.stats(user, d)
   }
 
   @Post()

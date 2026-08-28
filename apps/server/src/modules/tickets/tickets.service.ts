@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common'
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common'
 import { PrismaService } from '@/prisma/prisma.service'
 import { CreateTicketDto, CreateTicketCommentDto, UpdateTicketDto } from './tickets.dto'
 
@@ -72,6 +72,121 @@ export class TicketsService {
     })
   }
 
+  // ===== 坐席看板统计（仅坐席/管理员） =====
+  // 偏转率 = 1 − AI 升级工单数 / 活跃会话数（期间内有活动的 Chat）
+  // SLA：期内已解决工单按优先级阈值（urgent 4h / high 8h / normal 24h / low 48h）统计达标率；
+  // 解决时间取时间线系统事件，无记录的旧工单回退 updatedAt（近似）
+  private static readonly SLA_HOURS: Record<string, number> = {
+    urgent: 4,
+    high: 8,
+    normal: 24,
+    low: 48,
+  }
+
+  async stats(user: { role: string }, days = 30) {
+    if (!this.isStaff(user)) {
+      throw new ForbiddenException('仅坐席/管理员可查看统计')
+    }
+    const since = new Date(Date.now() - days * 86400_000)
+
+    const [activeSessions, periodTickets, backlogRows] = await Promise.all([
+      this.prisma.chat.count({ where: { updatedAt: { gte: since } } }),
+      this.prisma.ticket.findMany({
+        where: { createdAt: { gte: since } },
+        include: { comments: { where: { kind: 'system' }, orderBy: { createdAt: 'asc' } } },
+      }),
+      this.prisma.ticket.groupBy({
+        by: ['status'],
+        where: { status: { in: ['open', 'processing'] } },
+        _count: { _all: true },
+      }),
+    ])
+
+    // 工单解决时刻：时间线「已解决」事件优先，旧数据回退 updatedAt
+    const resolvedAtOf = (t: (typeof periodTickets)[number]) => {
+      const ev = t.comments.find((c) => c.content.includes('已解决'))
+      if (ev) return ev.createdAt
+      return t.status === 'resolved' || t.status === 'closed' ? t.updatedAt : null
+    }
+    // 首次响应时刻：时间线「由 X 受理」事件
+    const claimedAtOf = (t: (typeof periodTickets)[number]) => {
+      const ev = t.comments.find((c) => /^由 .+ 受理$/.test(c.content))
+      return ev ? ev.createdAt : null
+    }
+    const hours = (from: Date, to: Date) => (to.getTime() - from.getTime()) / 3600_000
+
+    const statusCount: Record<string, number> = { open: 0, processing: 0, resolved: 0, closed: 0 }
+    for (const t of periodTickets) statusCount[t.status] = (statusCount[t.status] || 0) + 1
+    const escalated = periodTickets.filter((t) => t.source === 'agent').length
+
+    // SLA：期内已解决（resolved/closed）的工单
+    const resolvedTickets = periodTickets.filter(
+      (t) => t.status === 'resolved' || t.status === 'closed',
+    )
+    let slaMet = 0
+    const resolutionHours: number[] = []
+    const firstResponseHours: number[] = []
+    for (const t of resolvedTickets) {
+      const resolvedAt = resolvedAtOf(t)
+      if (resolvedAt) {
+        const h = hours(t.createdAt, resolvedAt)
+        resolutionHours.push(h)
+        if (h <= (TicketsService.SLA_HOURS[t.priority] ?? 24)) slaMet++
+      }
+      const claimedAt = claimedAtOf(t)
+      if (claimedAt) firstResponseHours.push(hours(t.createdAt, claimedAt))
+    }
+    const avg = (xs: number[]) =>
+      xs.length ? Math.round((xs.reduce((a, b) => a + b, 0) / xs.length) * 10) / 10 : null
+
+    // 按优先级分布
+    const byPriority = ['urgent', 'high', 'normal', 'low'].map((priority) => {
+      const list = periodTickets.filter((t) => t.priority === priority)
+      let met = 0
+      for (const t of list) {
+        const resolvedAt = resolvedAtOf(t)
+        if (
+          resolvedAt &&
+          hours(t.createdAt, resolvedAt) <= (TicketsService.SLA_HOURS[priority] ?? 24)
+        ) {
+          met++
+        }
+      }
+      return {
+        priority,
+        total: list.length,
+        escalated: list.filter((t) => t.source === 'agent').length,
+        resolved: list.filter((t) => t.status === 'resolved' || t.status === 'closed').length,
+        slaMet: met,
+      }
+    })
+
+    const backlog = backlogRows.reduce((acc, r) => acc + r._count._all, 0)
+    const round = (n: number) => Math.round(n * 1000) / 1000
+
+    return {
+      periodDays: days,
+      sessions: activeSessions,
+      tickets: {
+        total: periodTickets.length,
+        escalated,
+        manual: periodTickets.length - escalated,
+        ...statusCount,
+      },
+      backlog, // 当前未完结（待处理+处理中）存量
+      deflectRate: activeSessions > 0 ? round(Math.max(0, 1 - escalated / activeSessions)) : null,
+      sla: {
+        met: slaMet,
+        total: resolvedTickets.length,
+        rate: resolvedTickets.length ? round(slaMet / resolvedTickets.length) : null,
+        avgResolutionHours: avg(resolutionHours),
+        avgFirstResponseHours: avg(firstResponseHours),
+        thresholdHours: TicketsService.SLA_HOURS,
+      },
+      byPriority,
+    }
+  }
+
   async create(userId: string, dto: CreateTicketDto) {
     const ticket = await this.prisma.ticket.create({
       data: {
@@ -79,6 +194,7 @@ export class TicketsService {
         title: dto.title,
         content: dto.content,
         priority: dto.priority || 'normal',
+        source: dto.source || 'manual',
       },
       include: {
         creator: AUTHOR_BRIEF,

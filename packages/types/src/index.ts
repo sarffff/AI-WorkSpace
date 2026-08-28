@@ -126,10 +126,52 @@ export interface TicketItem {
   priority: 'low' | 'normal' | 'high' | 'urgent'
   creator: TicketUserBrief
   assignee: TicketUserBrief | null
+  /** manual 手动创建 | agent AI 对话升级 */
+  source?: 'manual' | 'agent'
   createdAt: string
   updatedAt: string
   /** 列表接口附带：最新一条时间线预览（comment/system） */
   comments?: { kind: 'comment' | 'system'; content: string; createdAt: string }[]
+}
+
+/** 坐席看板：按优先级的工单分布与 SLA 达标 */
+export interface TicketPriorityStats {
+  priority: 'low' | 'normal' | 'high' | 'urgent'
+  total: number
+  escalated: number
+  resolved: number
+  slaMet: number
+}
+
+/** 坐席看板统计（仅坐席/管理员） */
+export interface TicketStats {
+  periodDays: number
+  /** 期间内活跃会话数（偏转率分母） */
+  sessions: number
+  tickets: {
+    total: number
+    /** AI 对话升级创建 */
+    escalated: number
+    manual: number
+    open: number
+    processing: number
+    resolved: number
+    closed: number
+  }
+  /** 当前未完结存量（待处理+处理中） */
+  backlog: number
+  /** 偏转率 0-1（AI 未升级占比，无会话时为 null） */
+  deflectRate: number | null
+  sla: {
+    met: number
+    total: number
+    /** 0-1，无已解决工单时为 null */
+    rate: number | null
+    avgResolutionHours: number | null
+    avgFirstResponseHours: number | null
+    thresholdHours: Record<string, number>
+  }
+  byPriority: TicketPriorityStats[]
 }
 
 // ===== 提示词管理 =====

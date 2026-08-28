@@ -79,6 +79,7 @@ model Ticket {
   creator    User      @relation("TicketCreator", fields: [creatorId], references: [id], onDelete: Cascade)
   assigneeId String?
   assignee   User?     @relation("TicketAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  source     String    @default("manual") // manual 手动创建 | agent AI 对话升级（偏转率统计依据）
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 

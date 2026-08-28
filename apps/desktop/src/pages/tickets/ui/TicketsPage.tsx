@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { useSelector } from 'react-redux'
-import type { TicketDetail, TicketItem, TicketStaff } from '@servicedesk/sdk'
+import type { TicketItem, TicketStaff, TicketStats } from '@servicedesk/sdk'
 import {
   Plus,
   TicketCheck,
@@ -12,43 +12,23 @@ import {
   Clock,
   ChevronRight,
   UserCog,
-  SendHorizonal,
-  History,
   Activity,
+  History,
+  BarChart3,
+  Gauge,
+  ShieldCheck,
+  Timer,
+  Zap,
 } from 'lucide-react'
 
 import { api } from '@/shared/api/client'
 import type { RootState } from '@/app/providers/store'
-
-const STATUS_META: Record<string, { label: string; style: string; dot: string }> = {
-  open: {
-    label: '待处理',
-    style: 'bg-sky-500/10 text-sky-300 border-sky-500/25',
-    dot: 'bg-sky-400',
-  },
-  processing: {
-    label: '处理中',
-    style: 'bg-amber-500/10 text-amber-300 border-amber-500/25',
-    dot: 'bg-amber-400 animate-pulse',
-  },
-  resolved: {
-    label: '已解决',
-    style: 'bg-brand/10 text-brand border-brand/25',
-    dot: 'bg-brand',
-  },
-  closed: {
-    label: '已关闭',
-    style: 'bg-s4 text-t3 border-line',
-    dot: 'bg-linestrong',
-  },
-}
-
-const PRIORITY_META: Record<string, { label: string; style: string }> = {
-  low: { label: '低', style: 'text-t3 border-line' },
-  normal: { label: '普通', style: 'text-sky-300 border-sky-500/25 bg-sky-500/10' },
-  high: { label: '高', style: 'text-amber-300 border-amber-500/25 bg-amber-500/10' },
-  urgent: { label: '紧急', style: 'text-rose-300 border-rose-500/25 bg-rose-500/10' },
-}
+import {
+  STATUS_META,
+  PRIORITY_META,
+  formatTime,
+  TicketDetailModal,
+} from '@/widgets/ticket-detail/ui/TicketDetailModal'
 
 const PRIORITIES = ['low', 'normal', 'high', 'urgent']
 const PRIORITY_LABEL: Record<string, string> = {
@@ -56,15 +36,6 @@ const PRIORITY_LABEL: Record<string, string> = {
   normal: '普通',
   high: '高',
   urgent: '紧急',
-}
-
-function formatTime(iso: string): string {
-  const d = new Date(iso)
-  const diff = Date.now() - d.getTime()
-  if (diff < 60000) return '刚刚'
-  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`
-  return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
 }
 
 // ===== 新建工单弹窗 =====
@@ -298,249 +269,180 @@ const TicketAssigner: React.FC<{
   )
 }
 
-// ===== 详情弹窗：完整描述 + 时间线（评论/系统事件）+ 状态操作 =====
-const TicketDetailModal: React.FC<{
-  ticketId: string
-  onClose: () => void
-  onChanged: (t: TicketDetail | null) => void
-}> = ({ ticketId, onClose, onChanged }) => {
-  const user = useSelector((s: RootState) => s.auth.user)
-  const isStaff = user?.role === 'agent' || user?.role === 'admin'
-  const [detail, setDetail] = useState<TicketDetail | null>(null)
-  const [error, setError] = useState('')
-  const [draft, setDraft] = useState('')
-  const [busy, setBusy] = useState(false)
-  const timelineRef = useRef<HTMLDivElement>(null)
+// ===== 坐席统计看板：偏转率 / SLA / 响应时长（仅坐席/管理员） =====
+const TicketStatsPanel: React.FC = () => {
+  const [days, setDays] = useState(30)
+  const [stats, setStats] = useState<TicketStats | null>(null)
+  const [loading, setLoading] = useState(true)
 
-  const load = () =>
+  useEffect(() => {
+    setLoading(true)
     api
-      .getTicketDetail(ticketId)
-      .then(setDetail)
-      .catch((e) => setError(e instanceof Error ? e.message : '加载失败'))
+      .getTicketStats(days)
+      .then(setStats)
+      .catch(() => setStats(null))
+      .finally(() => setLoading(false))
+  }, [days])
 
-  useEffect(() => {
-    load()
-  }, [ticketId])
+  if (!stats && !loading) return null
 
-  // 新评论后滚到底部
-  useEffect(() => {
-    timelineRef.current?.scrollTo({ top: timelineRef.current.scrollHeight })
-  }, [detail?.comments.length])
+  const pct = (n: number | null) => (n === null ? '—' : `${Math.round(n * 1000) / 10}%`)
+  const fmtHours = (n: number | null) =>
+    n === null ? '—' : n >= 48 ? `${(n / 24).toFixed(1)} 天` : `${n} 小时`
 
-  const patchDetail = (t: TicketDetail) => {
-    setDetail(t)
-    onChanged(t)
-  }
+  const statusBars = (['open', 'processing', 'resolved', 'closed'] as const).map((s) => ({
+    key: s,
+    meta: STATUS_META[s],
+    count: stats?.tickets[s] ?? 0,
+  }))
+  const maxStatus = Math.max(1, ...statusBars.map((b) => b.count))
 
-  const submitComment = async () => {
-    const content = draft.trim()
-    if (!content || !detail) return
-    setBusy(true)
-    setError('')
-    try {
-      const comment = await api.addTicketComment(detail.id, content)
-      setDetail((prev) => (prev ? { ...prev, comments: [...prev.comments, comment] } : prev))
-      setDraft('')
-    } catch (e) {
-      setError(e instanceof Error ? e.message : '评论失败')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const update = async (input: { status?: string; assigneeId?: string }) => {
-    if (!detail) return
-    try {
-      await api.updateTicket(detail.id, input)
-      // 重新拉详情：系统事件由服务端写入时间线
-      const fresh = await api.getTicketDetail(detail.id)
-      patchDetail(fresh)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : '更新失败')
-    }
-  }
-
-  const st = detail ? STATUS_META[detail.status] || STATUS_META.open : null
-  const pr = detail ? PRIORITY_META[detail.priority] || PRIORITY_META.normal : null
+  const cards = [
+    {
+      icon: <Gauge className="w-4 h-4 text-brand" />,
+      label: 'AI 偏转率',
+      value: pct(stats?.deflectRate ?? null),
+      sub: stats ? `活跃会话 ${stats.sessions} · AI 升级 ${stats.tickets.escalated}` : '',
+      accent: 'text-brand',
+    },
+    {
+      icon: <ShieldCheck className="w-4 h-4 text-sky-400" />,
+      label: 'SLA 达标率',
+      value: pct(stats?.sla.rate ?? null),
+      sub: stats ? `已解决 ${stats.sla.met}/${stats.sla.total} 按优先级阈值` : '',
+      accent: 'text-sky-300',
+    },
+    {
+      icon: <Timer className="w-4 h-4 text-amber-400" />,
+      label: '平均解决时长',
+      value: fmtHours(stats?.sla.avgResolutionHours ?? null),
+      sub: stats ? `未完结存量 ${stats.backlog}` : '',
+      accent: 'text-amber-300',
+    },
+    {
+      icon: <Zap className="w-4 h-4 text-signal" />,
+      label: '平均首次响应',
+      value: fmtHours(stats?.sla.avgFirstResponseHours ?? null),
+      sub: '受理时间线事件统计',
+      accent: 'text-signal',
+    },
+  ]
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm fade-in p-6"
-      onClick={onClose}
-    >
-      <div
-        className="w-full max-w-2xl max-h-[85vh] rounded-2xl panel border border-line shadow-2xl shadow-black/50 rise-in overflow-hidden flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {!detail ? (
-          <div className="flex items-center justify-center py-16 text-t3 text-sm gap-2">
-            <Loader2 className="w-4 h-4 animate-spin text-brand" />
-            加载工单详情...
+    <div className="rise-in p-5 rounded-xl panel" style={{ animationDelay: '40ms' }}>
+      {/* 标题 + 期间切换 */}
+      <div className="flex items-center justify-between pb-3 border-b border-line">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-lg bg-brand/10 border border-brand/20 flex items-center justify-center">
+            <BarChart3 className="w-4 h-4 text-brand" />
           </div>
-        ) : (
-          <>
-            {/* 头部：标题 + 状态/优先级 + 操作 */}
-            <div className="px-5 py-4 border-b border-line shrink-0">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <h3 className="font-display text-sm font-bold text-t1">{detail.title}</h3>
-                    {pr && (
-                      <span
-                        className={`text-[9px] font-mono px-1.5 py-0.5 rounded border tracking-wider ${pr.style}`}
-                      >
-                        {pr.label}
-                      </span>
-                    )}
-                    {st && (
-                      <span
-                        className={`text-[9px] font-mono px-2 py-0.5 rounded border tracking-wider flex items-center gap-1.5 ${st.style}`}
-                      >
-                        <span className={`w-1 h-1 rounded-full ${st.dot}`} />
-                        {st.label}
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-3 mt-2 text-[10px] font-mono text-t4">
-                    <span className="flex items-center gap-1">
-                      <UserRound className="w-3 h-3" />
-                      {detail.creator?.name || detail.creator?.email || '未知'}
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <ChevronRight className="w-3 h-3" />
-                      {detail.assignee ? detail.assignee.name || detail.assignee.email : '未受理'}
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <Clock className="w-3 h-3" />
-                      {formatTime(detail.createdAt)} 创建
-                    </span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  {isStaff && detail.status === 'open' && (
-                    <button
-                      onClick={() => update({ assigneeId: user?.id })}
-                      className="px-2.5 py-1.5 rounded-lg bg-brand/10 hover:bg-emerald-500/20 text-brand text-[10px] font-mono border border-brand/20 hover:border-brand/40 transition-colors"
-                    >
-                      受理
-                    </button>
-                  )}
-                  {isStaff && detail.status === 'processing' && (
-                    <button
-                      onClick={() => update({ status: 'resolved' })}
-                      className="px-2.5 py-1.5 rounded-lg bg-brand/10 hover:bg-emerald-500/20 text-brand text-[10px] font-mono border border-brand/20 hover:border-brand/40 transition-colors"
-                    >
-                      标记解决
-                    </button>
-                  )}
-                  {detail.status !== 'closed' && (
-                    <button
-                      onClick={() => update({ status: 'closed' })}
-                      className="px-2.5 py-1.5 rounded-lg text-t3 hover:text-t2 text-[10px] font-mono border border-line hover:border-linestrong transition-colors"
-                    >
-                      关闭
-                    </button>
-                  )}
-                  <button
-                    onClick={onClose}
-                    className="p-1.5 rounded-lg text-t3 hover:text-t1 hover:bg-s3 transition-colors"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-              {error && (
-                <div className="mt-3 px-3 py-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs font-mono">
-                  {error}
-                </div>
-              )}
-            </div>
-
-            {/* 问题描述 */}
-            <div className="px-5 py-3.5 border-b border-line shrink-0">
-              <p className="text-[9px] font-mono text-t4 tracking-wider mb-1.5">问题描述</p>
-              <p className="text-xs text-t2 leading-relaxed whitespace-pre-wrap">
-                {detail.content}
-              </p>
-            </div>
-
-            {/* 时间线 */}
-            <div className="px-5 py-3.5 shrink-0 flex items-center gap-2">
-              <History className="w-3.5 h-3.5 text-t3" />
-              <p className="text-[9px] font-mono text-t3 tracking-wider">
-                处理时间线 · {detail.comments.length} 条记录
-              </p>
-            </div>
-            <div ref={timelineRef} className="px-5 flex-1 overflow-y-auto min-h-0 space-y-2.5">
-              {detail.comments.map((c) =>
-                c.kind === 'system' ? (
-                  <div key={c.id} className="flex items-center gap-2 py-0.5">
-                    <Activity className="w-3 h-3 text-t4 shrink-0" />
-                    <p className="text-[10px] font-mono text-t4">
-                      {c.content}
-                      <span className="ml-2 text-t4/70">{formatTime(c.createdAt)}</span>
-                    </p>
-                  </div>
-                ) : (
-                  <div
-                    key={c.id}
-                    className={`flex flex-col rounded-lg border px-3 py-2 max-w-[85%] ${
-                      c.author.id === user?.id
-                        ? 'ml-auto bg-brand/8 border-brand/25'
-                        : 'bg-s4 border-line'
-                    }`}
-                  >
-                    <p className="text-[9px] font-mono text-t4 mb-1">
-                      {c.author.name || c.author.email}
-                      {(c.author.role === 'agent' || c.author.role === 'admin') && (
-                        <span className="ml-1.5 text-brand/80">
-                          {c.author.role === 'admin' ? 'ADMIN' : 'AGENT'}
-                        </span>
-                      )}
-                      <span className="ml-2">{formatTime(c.createdAt)}</span>
-                    </p>
-                    <p className="text-xs text-t1 leading-relaxed whitespace-pre-wrap">
-                      {c.content}
-                    </p>
-                  </div>
-                ),
-              )}
-              {detail.comments.length === 0 && (
-                <p className="text-[10px] font-mono text-t4 text-center py-4">
-                  暂无处理记录 — 坐席受理后在此留言沟通
-                </p>
-              )}
-            </div>
-
-            {/* 评论输入 */}
-            <div className="px-5 py-4 border-t border-line shrink-0 flex items-center gap-2.5">
-              <input
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) submitComment()
-                }}
-                maxLength={1000}
-                placeholder={
-                  isStaff ? '回复/追加处理说明（坐席与提问者可见）...' : '补充信息或追问处理进度...'
-                }
-                className="flex-1 bg-s4 border border-line rounded-lg px-3 py-2.5 text-xs text-t1 placeholder:text-t4 focus:outline-none focus:border-brand/50 transition-colors"
-              />
-              <button
-                onClick={submitComment}
-                disabled={busy || !draft.trim()}
-                className="p-2.5 rounded-lg bg-brand-strong hover:brightness-110 disabled:opacity-40 text-brand-on transition-all shadow-md shadow-emerald-500/20"
-              >
-                {busy ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <SendHorizonal className="w-3.5 h-3.5" />
-                )}
-              </button>
-            </div>
-          </>
-        )}
+          <div>
+            <h4 className="font-display text-sm font-semibold text-t1">坐席看板</h4>
+            <span className="text-[11px] text-t3">AI 偏转率与人工处理 SLA 概览</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5">
+          {[7, 30].map((d) => (
+            <button
+              key={d}
+              onClick={() => setDays(d)}
+              className={`px-2.5 py-1 rounded-lg text-[10px] font-mono border transition-all ${
+                days === d
+                  ? 'bg-brand/15 text-brand border-brand/40'
+                  : 'text-t3 border-line hover:text-t2'
+              }`}
+            >
+              近 {d} 天
+            </button>
+          ))}
+        </div>
       </div>
+
+      {loading && !stats ? (
+        <div className="h-24 mt-4 rounded-lg bg-s4 animate-pulse" />
+      ) : stats ? (
+        <>
+          {/* 核心指标卡 */}
+          <div className="grid grid-cols-4 gap-3 mt-4">
+            {cards.map((c) => (
+              <div key={c.label} className="rounded-lg bg-s4 border border-line px-3.5 py-3">
+                <div className="flex items-center gap-1.5 text-t3">
+                  {c.icon}
+                  <span className="text-[9px] font-mono tracking-wider">{c.label}</span>
+                </div>
+                <p className={`font-display text-xl font-bold mt-1.5 ${c.accent}`}>{c.value}</p>
+                <p className="text-[9px] font-mono text-t4 mt-1 truncate">{c.sub}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-2 gap-4 mt-4">
+            {/* 状态分布 */}
+            <div className="rounded-lg bg-s4 border border-line p-3.5">
+              <p className="text-[9px] font-mono text-t4 tracking-wider mb-2.5">
+                工单状态分布（期内新建 {stats.tickets.total}）
+              </p>
+              <div className="space-y-2">
+                {statusBars.map((b) => (
+                  <div key={b.key} className="flex items-center gap-2.5">
+                    <span className="text-[10px] font-mono text-t3 w-12 shrink-0">
+                      {b.meta.label}
+                    </span>
+                    <div className="flex-1 h-1.5 rounded-full bg-line overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${b.meta.dot} transition-all`}
+                        style={{ width: `${(b.count / maxStatus) * 100}%` }}
+                      />
+                    </div>
+                    <span className="text-[10px] font-mono text-t2 w-6 text-right shrink-0">
+                      {b.count}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* 优先级 × SLA */}
+            <div className="rounded-lg bg-s4 border border-line p-3.5">
+              <p className="text-[9px] font-mono text-t4 tracking-wider mb-2.5">
+                优先级分布（其中 AI 升级 / SLA 达标）
+              </p>
+              <div className="space-y-1.5">
+                {stats.byPriority.map((p) => (
+                  <div
+                    key={p.priority}
+                    className="flex items-center justify-between text-[10px] font-mono"
+                  >
+                    <span
+                      className={`px-1.5 py-0.5 rounded border ${PRIORITY_META[p.priority].style}`}
+                    >
+                      {PRIORITY_LABEL[p.priority]}
+                    </span>
+                    <span className="text-t3">
+                      共 {p.total} · <span className="text-signal/80">AI {p.escalated}</span> ·
+                      已解决 {p.resolved}
+                    </span>
+                    <span
+                      className={
+                        p.total && p.slaMet === p.resolved && p.resolved > 0
+                          ? 'text-brand'
+                          : 'text-t4'
+                      }
+                    >
+                      SLA {p.slaMet}/{p.resolved}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <p className="text-[9px] font-mono text-t4 mt-3 leading-relaxed">
+            偏转率 = 1 − AI 升级工单数 / 期间活跃会话数 · SLA 阈值 紧急 4h / 高 8h / 普通 24h / 低
+            48h · 解决时间取时间线事件（旧工单回退最后更新时间）
+          </p>
+        </>
+      ) : null}
     </div>
   )
 }
@@ -654,6 +556,9 @@ export const TicketsPage: React.FC = () => {
             新建工单
           </button>
         </div>
+
+        {/* 坐席看板（仅坐席/管理员） */}
+        {isStaff && <TicketStatsPanel />}
 
         {error && (
           <div className="px-4 py-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs font-mono fade-in">

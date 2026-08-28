@@ -21,6 +21,7 @@ import {
   clearActivePrompt,
 } from '@/entities/chat/model/chatSlice'
 import { api, syncToken } from '@/shared/api/client'
+import { TicketDetailModal } from '@/widgets/ticket-detail/ui/TicketDetailModal'
 import type { MessageSource, PromptItem, TicketRef, ToolTraceStep } from '@servicedesk/sdk'
 import {
   Send,
@@ -211,11 +212,14 @@ const AgentTrace: React.FC<{ steps: ToolTraceStep[]; live?: boolean }> = ({ step
   )
 }
 
-// Agent 自动创建的工单通知卡片
-const TicketNotice: React.FC<{ ticket: TicketRef }> = ({ ticket }) => {
+// Agent 自动创建的工单通知卡片：点击直接打开工单详情（时间线/评论/状态操作）
+const TicketNotice: React.FC<{ ticket: TicketRef; onOpen: () => void }> = ({ ticket, onOpen }) => {
   const dispatch = useDispatch()
   return (
-    <div className="mt-3 flex items-center justify-between gap-3 p-3 rounded-xl border border-signal/25 bg-signal/[0.06] fade-in">
+    <div
+      className="mt-3 flex items-center justify-between gap-3 p-3 rounded-xl border border-signal/25 bg-signal/[0.06] fade-in cursor-pointer hover:border-signal/50 transition-colors"
+      onClick={onOpen}
+    >
       <div className="flex items-center gap-2.5 min-w-0">
         <div className="w-8 h-8 rounded-lg bg-signal/10 border border-signal/25 text-signal flex items-center justify-center shrink-0">
           <TicketCheck className="w-4 h-4" />
@@ -227,12 +231,26 @@ const TicketNotice: React.FC<{ ticket: TicketRef }> = ({ ticket }) => {
           <p className="text-xs text-t1 font-semibold truncate mt-0.5">{ticket.title}</p>
         </div>
       </div>
-      <button
-        onClick={() => dispatch(setActiveTab('tickets'))}
-        className="px-3 py-1.5 rounded-lg bg-signal/10 hover:bg-signal/20 border border-signal/30 hover:border-signal/50 text-signal text-[10px] font-mono shrink-0 transition-colors"
-      >
-        查看工单 →
-      </button>
+      <div className="flex items-center gap-1.5 shrink-0">
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            dispatch(setActiveTab('tickets'))
+          }}
+          className="px-2.5 py-1.5 rounded-lg text-t3 hover:text-t1 text-[10px] font-mono border border-line hover:border-linestrong transition-colors"
+        >
+          工单页
+        </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            onOpen()
+          }}
+          className="px-3 py-1.5 rounded-lg bg-signal/10 hover:bg-signal/20 border border-signal/30 hover:border-signal/50 text-signal text-[10px] font-mono shrink-0 transition-colors"
+        >
+          查看详情 →
+        </button>
+      </div>
     </div>
   )
 }
@@ -256,6 +274,7 @@ export const ChatPage: React.FC = () => {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [promptList, setPromptList] = useState<PromptItem[]>([])
   const [liveTrace, setLiveTrace] = useState<ToolTraceStep[]>([])
+  const [ticketDetailId, setTicketDetailId] = useState<string | null>(null)
   const pickerRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
@@ -675,7 +694,12 @@ export const ChatPage: React.FC = () => {
                         msg.id === messages[messages.length - 1].id &&
                         !showThinking && <span className="stream-cursor" />}
                     </div>
-                    {msg.ticketRef && <TicketNotice ticket={msg.ticketRef} />}
+                    {msg.ticketRef && (
+                      <TicketNotice
+                        ticket={msg.ticketRef}
+                        onOpen={() => setTicketDetailId(msg.ticketRef!.id)}
+                      />
+                    )}
                     {msg.sources && msg.sources.length > 0 && <SourceCards sources={msg.sources} />}
                   </div>
                 </div>
@@ -844,6 +868,11 @@ export const ChatPage: React.FC = () => {
           </div>
         </form>
       </div>
+
+      {/* 会话内引用工单 → 直接打开详情弹窗（时间线/评论/状态操作） */}
+      {ticketDetailId && (
+        <TicketDetailModal ticketId={ticketDetailId} onClose={() => setTicketDetailId(null)} />
+      )}
     </div>
   )
 }
