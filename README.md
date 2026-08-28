@@ -1,12 +1,12 @@
-# AI Workspace Monorepo
+# ServiceDeck · 智能服务台
 
-> 一个基于现代化技术栈构建的高性能跨平台智能 AI 工作台，采用 Monorepo 架构。
+> 企业级 AI Helpdesk Agent：知识库问答（RAG + 引用溯源 + 部门权限）→ 自动回答；超出范围升级工单 → 坐席人工闭环。Monorepo 架构。
 
 ---
 
 ## 📖 项目介绍
 
-**AI Workspace** 是一个集成了大语言模型对话、本地/云端 RAG 知识库检索、实时通信以及桌面端交互的智能化生产力工作台。项目采用 **pnpm Workspace + Turborepo** 进行高效的 Monorepo 工程化管理，前端基于 **React 19 + Electron + Vite + Tailwind CSS (FSD 架构)**，后端基于 **NestJS + Prisma + MySQL**。
+**ServiceDeck** 是面向企业 IT 服务台的智能 Agent 系统：员工提问优先由 AI 基于部门知识库检索回答（附引用溯源），无法自动解决的问题升级为工单，由坐席受理闭环。项目采用 **pnpm Workspace + Turborepo** 进行高效的 Monorepo 工程化管理，前端基于 **React 19 + Electron + Vite + Tailwind CSS (FSD 架构)**，后端基于 **NestJS + Prisma + MySQL**。
 
 ---
 
@@ -60,19 +60,22 @@ AI-Workspace/
 - [x] 搭建 `apps/server` (NestJS + Prisma + MySQL)
 - [x] 统一安装及校验所有技术栈依赖
 
-### Phase 2: 核心功能开发 (进行中 🚧)
+### Phase 2: 核心功能开发 (已完成 ✅)
 
-- [-] **AI 聊天模块**：实现桌面端与 NestJS 后端流式对话 (OpenAI / DeepSeek)
-- [ ] **RAG 知识库**：文档上传、切片、向量化存储与检索
-- [ ] **Prompt 提示词广场**：预设模板与自定义提示词管理
-- [ ] **系统设置**：API Key 配置与链接测试（LLM 配置已完成）
+- [x] **AI 聊天模块**：SSE 流式对话，Agent 工具循环（`search_knowledge` / `create_ticket`），反思轮与工具轨迹展示
+- [x] **RAG 知识库**：文档上传、清洗、父子块切片、向量化存储；稠密向量 + BM25 混合检索、RRF 融合、Reranker 精排与降级；异步索引队列与进度追踪；行级权限（用户/部门）与引用溯源
+- [x] **Prompt 提示词广场**：预设模板与自定义提示词管理
+- [x] **系统设置**：API Key 配置与链接测试，RAG 与用户设置动态合并
+- [x] **工单闭环 (超出原计划)**：Agent 超范围自动升级工单，坐席/管理员受理，角色权限隔离
+- [x] **会话记忆 (超出原计划)**：会话与工单上下文沉淀，支撑个性化召回
+- [x] **检索质量评测 (超出原计划)**：Top-K 命中率 / MRR 回归评测脚本与数据集
 
-### Phase 3: 高级特性与多 Provider 扩展 (待启动 ⏳)
+### Phase 3: 高级特性与多 Provider 扩展 (进行中 🚧)
 
 - [ ] 扩展支持 Anthropic Claude、DeepSeek、Ollama 本地模型
-- [ ] 知识库向量索引与语义搜索优化
-- [ ] Electron 自动更新 (`electron-updater`) 与打包发布配置
-- [ ] 端到端测试 (E2E) 与性能调优
+- [ ] Electron 打包发布、自动更新 (`electron-updater`) 与 API 地址可配置
+- [ ] 坐席工作台深化：工单分派、SLA 与状态流转看板
+- [ ] 单元测试、端到端测试 (E2E) 与 CI/CD 流水线
 
 ---
 
