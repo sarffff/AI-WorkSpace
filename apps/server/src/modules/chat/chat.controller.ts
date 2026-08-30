@@ -140,7 +140,8 @@ export class ChatController {
     }
   }
 
-  // HITL 建单确认：用户在确认卡上选择后调用，恢复/终止挂起的 Agent 循环
+  // HITL 建单确认：用户在确认卡上选择后调用，恢复/终止挂起的 Agent 循环；
+  // SSE 已断连时（内存注册表未命中）回查持久化草稿补建工单或置为拒绝
   @Post(':id/confirm-ticket')
   async confirmTicket(
     @UserId() userId: string,
@@ -152,7 +153,14 @@ export class ChatController {
       return { success: false, message: '确认请求与当前会话不匹配' }
     }
     await this.chatService.assertOwned(userId, id)
-    const resolved = this.chatService.resolveConfirm(body.requestId, body.approved)
+    const resolved = await this.chatService.resolveConfirm(body.requestId, body.approved)
     return { success: resolved }
+  }
+
+  // 待确认建单草稿列表（SSE 断连后前端重载页面据此恢复未决确认卡）
+  @Get(':id/ticket-drafts')
+  async ticketDrafts(@UserId() userId: string, @Param('id') id: string) {
+    await this.chatService.assertOwned(userId, id)
+    return this.chatService.listPendingTicketDrafts(id)
   }
 }

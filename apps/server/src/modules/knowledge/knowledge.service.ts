@@ -12,6 +12,8 @@ import OpenAI from 'openai'
 import { Prisma } from '@prisma/client'
 import { PrismaService } from '@/prisma/prisma.service'
 import { SettingsService } from '@/modules/settings/settings.service'
+import { LlmClient } from '@/common/llm-client'
+import { EmbeddingsClient, cosineSimilarity } from '@/common/embeddings'
 import { IndexingQueueService } from './indexing-queue.service'
 import { chunkDocument, ChunkConfig } from './chunking'
 import { BM25, tokenize } from './bm25'
@@ -72,12 +74,13 @@ const RRF_K = 60
 @Injectable()
 export class KnowledgeService implements OnModuleInit {
   private readonly logger = new Logger(KnowledgeService.name)
-  private embeddings: OpenAIEmbeddings | null = null
   private rewriteClient: OpenAI | null = null
 
   constructor(
     private prisma: PrismaService,
     private configService: ConfigService,
+    private llmClient: LlmClient,
+    private embeddingsClient: EmbeddingsClient,
     private settingsService: SettingsService,
     private readonly queue: IndexingQueueService,
   ) {}
@@ -87,26 +90,14 @@ export class KnowledgeService implements OnModuleInit {
     this.queue.registerHandler((documentId, buffer) => this.processDocument(documentId, buffer))
   }
 
-  // 懒加载 embedding 客户端（避免无 API Key 时启动失败）
-  // 独立变量 EMBEDDING_* > 复用 LLM_* 配置，均为 OpenAI 兼容格式
+  // 懒加载 embedding 客户端（共享 EmbeddingsClient；未配置 API Key 时明确报错，
+  // 由索引流水线/检索调用方按各自策略处理）
   private getEmbeddings(): OpenAIEmbeddings {
-    if (this.embeddings) return this.embeddings
-    this.embeddings = new OpenAIEmbeddings({
-      model:
-        this.configService.get<string>('EMBEDDING_MODEL') ||
-        this.configService.get<string>('LLM_EMBEDDING_MODEL') ||
-        'embedding-3',
-      apiKey:
-        this.configService.get<string>('EMBEDDING_API_KEY') ||
-        this.configService.get<string>('LLM_API_KEY'),
-      configuration: {
-        baseURL:
-          this.configService.get<string>('EMBEDDING_BASE_URL') ||
-          this.configService.get<string>('LLM_API_URL') ||
-          'https://open.bigmodel.cn/api/paas/v4/',
-      },
-    })
-    return this.embeddings
+    const client = this.embeddingsClient.get()
+    if (!client) {
+      throw new Error('embedding 未配置（EMBEDDING_API_KEY 或 LLM_API_KEY），无法执行向量化')
+    }
+    return client
   }
 
   // ===== 切块/检索参数（环境变量为全局默认，Setting 表可按用户覆盖检索参数）=====
@@ -509,13 +500,15 @@ export class KnowledgeService implements OnModuleInit {
 
   // 查询改写（HyDE 简化版）：用环境变量配置的 LLM 把口语化提问改写为检索语句。
   // 开关：Setting 表 ragQueryRewrite 或环境变量 RAG_QUERY_REWRITE（默认 on）
+  // LLM 调用走 LlmClient 封装（超时/重试/备用模型降级），失败回退原查询
   private async rewriteQuery(userId: string, query: string): Promise<string> {
     const client = this.getRewriteClient()
     if (!client) return query
     try {
-      const model = this.configService.get<string>('LLM_API_MODEL') || 'GLM-4-Flash'
-      const completion = await client.chat.completions.create({
-        model,
+      const modelChain = this.llmClient.modelChain(
+        this.configService.get<string>('LLM_API_MODEL') || 'GLM-4-Flash',
+      )
+      const { completion } = await this.llmClient.complete(client, modelChain, {
         temperature: 0,
         max_tokens: 128,
         messages: [
@@ -618,19 +611,4 @@ function rrfFuse(
     })
   }
   return [...acc.entries()].map(([id, score]) => ({ id, score })).sort((a, b) => b.score - a.score)
-}
-
-// 余弦相似度
-function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length || a.length === 0) return 0
-  let dot = 0
-  let na = 0
-  let nb = 0
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i]
-    na += a[i] * a[i]
-    nb += b[i] * b[i]
-  }
-  if (na === 0 || nb === 0) return 0
-  return dot / (Math.sqrt(na) * Math.sqrt(nb))
 }

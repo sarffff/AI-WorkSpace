@@ -35,6 +35,7 @@ model Memory {
   category  String // preference 偏好 | fact 事实 | ticket 工单记录
   content   String   @db.VarChar(255)
   chatId    String? // 来源会话（溯源，不建外键）
+  embedding Json? // 记忆内容向量，用于按当前问题相关性召回；为空则回退按 updatedAt 排序
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -101,6 +102,48 @@ model TicketComment {
   createdAt DateTime @default(now())
 
   @@index([ticketId, createdAt])
+}
+
+// HITL 建单确认草稿：Agent 建单前的待确认请求持久化，SSE 断连后仍可异步确认/拒绝。
+// requestId 沿用 `${chatId}:${ts}:${rand}` 格式，confirm 接口据此校验会话归属；
+// chatId/userId 不建外键（与 Memory 的 chatId 一致），草稿为确认窗口内的临时数据。
+model TicketDraft {
+  requestId String   @id
+  chatId    String
+  userId    String
+  title     String
+  content   String   @db.Text
+  priority  String   @default("normal") // low | normal | high | urgent
+  status    String   @default("pending") // pending 待确认 | approved 已确认建单 | rejected 已拒绝
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([chatId, status])
+  @@index([userId])
+}
+
+// Agent 运行轨迹：每次流式回答的可观测落库记录（决策轮/工具调用/生成明细 + 分轮 token 记账），
+// 供成本分析、轨迹回放与异常排查；chatId/userId 不建外键（与 Memory/TicketDraft 一致）。
+model AgentRun {
+  id               String   @id @default(uuid())
+  chatId           String
+  userId           String
+  model            String? // 实际使用的最终模型（决策/生成降级后的最终值）
+  status           String   @default("completed") // completed 完整 | partial 断连中断
+  rounds           Int      @default(0) // 决策循环轮数
+  toolCalls        Int      @default(0) // 工具调用总次数
+  sources          Int      @default(0) // RAG 命中片段数
+  ticketId         String?
+  ticketTitle      String?
+  promptTokens     Int      @default(0) // 总计（决策循环 + 生成）
+  completionTokens Int      @default(0)
+  replyChars       Int      @default(0)
+  totalMs          Int      @default(0)
+  steps            Json? // 轨迹明细：decision/tool/generate 步骤（含分轮 token 记账）
+  createdAt        DateTime @default(now())
+
+  @@index([chatId, createdAt])
+  @@index([userId, createdAt])
 }
 
 model Document {

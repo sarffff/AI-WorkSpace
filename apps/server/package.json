@@ -6,7 +6,8 @@
     "build": "nest build",
     "dev": "nest start --watch",
     "lint": "eslint .",
-    "eval:retrieval": "nest build && node dist/src/scripts/eval-retrieval.js"
+    "eval:retrieval": "nest build && node dist/src/scripts/eval-retrieval.js",
+    "eval:agent": "nest build && node dist/src/scripts/eval-agent.js"
   },
   "dependencies": {
     "@langchain/openai": "^1.5.6",

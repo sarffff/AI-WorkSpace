@@ -1,0 +1,82 @@
+[
+  {
+    "query": "公司 VPN 连接失败提示 800 错误，怎么排查？",
+    "expectSearch": true,
+    "expectTicket": false,
+    "expectTicketLookup": false,
+    "expectedDocs": ["VPN 排障手册"],
+    "note": "IT 问题：应检索知识库（示例数据：请把文档名换成实际知识库文档）"
+  },
+  {
+    "query": "报销流程需要哪些审批步骤？",
+    "expectSearch": true,
+    "expectTicket": false,
+    "expectTicketLookup": false,
+    "expectedDocs": ["报销流程说明"],
+    "note": "制度流程类：应检索"
+  },
+  {
+    "query": "新员工入职需要办理哪些手续？",
+    "expectSearch": true,
+    "expectTicket": false,
+    "expectTicketLookup": false,
+    "expectedDocs": ["入职办理指引"],
+    "note": "流程类：应检索"
+  },
+  {
+    "query": "帮我重置企业微信登录密码，我的账号是 zhangsan",
+    "expectSearch": false,
+    "expectTicket": true,
+    "expectTicketLookup": false,
+    "expectedDocs": [],
+    "note": "人工操作类（信息已齐全）：应建单转人工"
+  },
+  {
+    "query": "帮我给 OA 系统账号 zhangsan 开通管理员权限",
+    "expectSearch": false,
+    "expectTicket": true,
+    "expectTicketLookup": false,
+    "expectedDocs": [],
+    "note": "权限变更：应建单"
+  },
+  {
+    "query": "会议室的投影仪坏了，影响下午的评审会",
+    "expectSearch": false,
+    "expectTicket": true,
+    "expectTicketLookup": false,
+    "expectedDocs": [],
+    "note": "硬件报修：应建单"
+  },
+  {
+    "query": "我之前提交的工单现在处理到什么状态了？",
+    "expectSearch": false,
+    "expectTicket": false,
+    "expectTicketLookup": true,
+    "expectedDocs": [],
+    "note": "工单状态询问：必须查工单工具，不能凭空回答"
+  },
+  {
+    "query": "帮我查一下工单 TK-20240001 的处理进度",
+    "expectSearch": false,
+    "expectTicket": false,
+    "expectTicketLookup": true,
+    "expectedDocs": [],
+    "note": "指定单号：应调用 get_ticket 查详情"
+  },
+  {
+    "query": "帮我写一段 Python 快速排序代码",
+    "expectSearch": false,
+    "expectTicket": false,
+    "expectTicketLookup": false,
+    "expectedDocs": [],
+    "note": "通用编程问题：不检索不建单，直接回答"
+  },
+  {
+    "query": "公司新发布的「数据安全合规细则」有哪些要求？",
+    "expectSearch": true,
+    "expectTicket": false,
+    "expectTicketLookup": false,
+    "expectedDocs": [],
+    "note": "知识库无相关内容：应检索且不编造引用（expectedDocs 空 = 期望无命中）"
+  }
+]
