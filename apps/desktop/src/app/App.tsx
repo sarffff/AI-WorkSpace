@@ -12,6 +12,7 @@ import { ChatPage } from '@/pages/chat/ui/ChatPage'
 import { KnowledgePage } from '@/pages/knowledge/ui/KnowledgePage'
 import { PromptsPage } from '@/pages/prompts/ui/PromptsPage'
 import { TicketsPage } from '@/pages/tickets/ui/TicketsPage'
+import { AnalyticsPage } from '@/pages/analytics/ui/AnalyticsPage'
 import { SettingsPage } from '@/pages/settings/ui/SettingsPage'
 
 function Workspace() {
@@ -27,6 +28,8 @@ function Workspace() {
         return <PromptsPage />
       case 'tickets':
         return <TicketsPage />
+      case 'analytics':
+        return <AnalyticsPage />
       case 'settings':
         return <SettingsPage />
       default:

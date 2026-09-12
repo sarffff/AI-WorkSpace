@@ -23,6 +23,7 @@ import {
   Pencil,
   Activity,
   TicketCheck,
+  BarChart3,
 } from 'lucide-react'
 
 // token 数量人性化：1.2k / 3.4M
@@ -39,6 +40,7 @@ export const Sidebar: React.FC = () => {
     (state: RootState) => state.chat,
   )
   const token = useSelector((state: RootState) => state.auth.token)
+  const user = useSelector((state: RootState) => state.auth.user)
 
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
@@ -71,12 +73,22 @@ export const Sidebar: React.FC = () => {
       })
   }, [dispatch, token])
 
-  const navItems: { id: NavTab; label: string; icon: React.ReactNode }[] = [
+  const navItems: { id: NavTab; label: string; icon: React.ReactNode; staffOnly?: boolean }[] = [
     { id: 'knowledge', label: '知识库', icon: <BookOpen className="w-4 h-4" /> },
     { id: 'prompts', label: '提示词', icon: <Sparkles className="w-4 h-4" /> },
     { id: 'tickets', label: '工单', icon: <TicketCheck className="w-4 h-4" /> },
+    {
+      id: 'analytics',
+      label: '运营看板',
+      icon: <BarChart3 className="w-4 h-4" />,
+      staffOnly: true,
+    },
     { id: 'settings', label: '设置', icon: <Settings className="w-4 h-4" /> },
   ]
+
+  // 运营看板仅坐席/管理员可见（其余导航对所有用户开放）
+  const isStaff = user?.role === 'agent' || user?.role === 'admin'
+  const visibleNavItems = navItems.filter((item) => !item.staffOnly || isStaff)
 
   const handleNewChat = () => {
     dispatch(setCurrentChat(null))
@@ -155,7 +167,7 @@ export const Sidebar: React.FC = () => {
       {/* 导航 */}
       <div className="px-4 py-2 space-y-0.5">
         <div className="tag-telemetry text-[9px] text-t3 font-mono px-2 mb-1.5">功能模块</div>
-        {navItems.map((item) => {
+        {visibleNavItems.map((item) => {
           const active = activeTab === item.id
           return (
             <button

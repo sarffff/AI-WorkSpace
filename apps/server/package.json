@@ -5,6 +5,8 @@
   "scripts": {
     "build": "nest build",
     "dev": "nest start --watch",
+    "test": "jest",
+    "test:ci": "jest --ci --runInBand",
     "lint": "eslint .",
     "eval:retrieval": "nest build && node dist/src/scripts/eval-retrieval.js",
     "eval:agent": "nest build && node dist/src/scripts/eval-agent.js"
@@ -36,11 +38,14 @@
     "@nestjs/testing": "^10.3.10",
     "@types/bcrypt": "^6.0.0",
     "@types/express": "^4.17.21",
+    "@types/jest": "^29.5.12",
     "@types/multer": "^2.2.0",
     "@types/node": "^20.14.10",
     "@types/passport": "^1.0.17",
     "@types/passport-jwt": "^4.0.1",
+    "jest": "^29.7.0",
     "prisma": "^5.16.2",
+    "ts-jest": "^29.2.5",
     "typescript": "^5.5.4"
   }
 }

@@ -6,6 +6,7 @@ import { ChatModule } from './modules/chat/chat.module'
 import { KnowledgeModule } from './modules/knowledge/knowledge.module'
 import { PromptsModule } from './modules/prompts/prompts.module'
 import { TicketsModule } from './modules/tickets/tickets.module'
+import { AnalyticsModule } from './modules/analytics/analytics.module'
 import { SettingsModule } from './modules/settings/settings.module'
 
 @Module({
@@ -18,6 +19,7 @@ import { SettingsModule } from './modules/settings/settings.module'
     KnowledgeModule,
     PromptsModule,
     TicketsModule,
+    AnalyticsModule,
   ],
 })
 export class AppModule {}

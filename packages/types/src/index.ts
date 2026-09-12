@@ -207,5 +207,97 @@ export interface CompletionResponse {
   data: string
 }
 
+// ===== Agent 运行运营看板 =====
+
+/** AgentRun.steps 轨迹明细步骤（decision/tool/generate，含分轮 token 记账） */
+export type AgentRunStep =
+  | {
+      kind: 'decision'
+      round: number
+      model: string
+      promptTokens: number
+      completionTokens: number
+      ms: number
+    }
+  | {
+      kind: 'tool'
+      tool: string
+      status: 'start' | 'done'
+      summary?: string
+      ms?: number
+      round: number
+    }
+  | {
+      kind: 'generate'
+      model: string
+      promptTokens: number
+      completionTokens: number
+      ms: number
+      stream: true
+    }
+
+/** 工具调用分布条目 */
+export interface ToolDistributionItem {
+  tool: string
+  count: number
+}
+
+/** 模型使用分布条目 */
+export interface ModelDistributionItem {
+  model: string
+  runs: number
+}
+
+/** 每日运行/token 统计 */
+export interface DailyTokenStat {
+  date: string // YYYY-MM-DD
+  runs: number
+  promptTokens: number
+  completionTokens: number
+}
+
+/** 运营看板概览（仅坐席/管理员） */
+export interface AgentRunOverview {
+  periodDays: number
+  totalRuns: number
+  totalToolCalls: number
+  totalPromptTokens: number
+  totalCompletionTokens: number
+  /** 保留 1 位小数；无运行时为 null */
+  avgRounds: number | null
+  avgTotalMs: number | null
+  /** RAG 命中（sources>0）占比 0-1；无运行时为 null */
+  searchHitRate: number | null
+  /** 建单（ticketId 非空）占比 0-1 */
+  ticketConversionRate: number | null
+  toolDistribution: ToolDistributionItem[]
+  modelDistribution: ModelDistributionItem[]
+  daily: DailyTokenStat[]
+}
+
+/** 运行明细列表项（轻量，不含 steps） */
+export interface AgentRunItem {
+  id: string
+  chatId: string
+  userId: string
+  model: string | null
+  status: 'completed' | 'partial'
+  rounds: number
+  toolCalls: number
+  sources: number
+  ticketId: string | null
+  ticketTitle: string | null
+  promptTokens: number
+  completionTokens: number
+  totalMs: number
+  createdAt: string
+}
+
+/** 运行详情（含完整步骤时间线） */
+export interface AgentRunDetail extends AgentRunItem {
+  replyChars: number
+  steps: AgentRunStep[]
+}
+
 // ===== 导航标签管理 =====
-export type NavTab = 'chat' | 'knowledge' | 'prompts' | 'tickets' | 'settings'
+export type NavTab = 'chat' | 'knowledge' | 'prompts' | 'tickets' | 'analytics' | 'settings'

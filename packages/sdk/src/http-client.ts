@@ -12,6 +12,9 @@ import type {
   TicketStats,
   TicketDraft,
   ToolTraceStep,
+  AgentRunOverview,
+  AgentRunItem,
+  AgentRunDetail,
   AppSettings,
   AuthResponse,
   AuthUser,
@@ -351,6 +354,23 @@ export class HttpClient {
   // 删除工单
   async deleteTicket(id: string): Promise<void> {
     await this.request<unknown>(`/tickets/${id}`, { method: 'DELETE' })
+  }
+
+  // ===== Agent 运行运营看板 =====
+
+  // 运行看板概览（KPI/分布/每日趋势，仅坐席/管理员；days 范围 1-90）
+  async getAgentRunOverview(days = 30): Promise<AgentRunOverview> {
+    return this.request<AgentRunOverview>(`/analytics/overview?days=${days}`)
+  }
+
+  // 运行明细列表（最近优先；limit 1-200）
+  async listAgentRuns(limit = 50, offset = 0): Promise<AgentRunItem[]> {
+    return this.request<AgentRunItem[]>(`/analytics/runs?limit=${limit}&offset=${offset}`)
+  }
+
+  // 运行详情（含 steps 轨迹时间线）
+  async getAgentRunDetail(id: string): Promise<AgentRunDetail> {
+    return this.request<AgentRunDetail>(`/analytics/runs/${id}`)
   }
 
   // 流式发消息 — 返回 AsyncGenerator，逐 chunk 消费
