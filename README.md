@@ -72,10 +72,18 @@ AI-Workspace/
 
 ### Phase 3: 高级特性与多 Provider 扩展 (进行中 🚧)
 
-- [ ] 扩展支持 Anthropic Claude、DeepSeek、Ollama 本地模型
+- [x] **Agent 工具注册表化**：工具改为「一个类 = 一个工具」（`modules/chat/agent-tools/`），
+      schema 单一真相同时驱动运行时校验与给模型的 JSON Schema；新增工具只需实现 `AgentTool`
+      并登记，无需再改工具循环
+- [x] **Agent 可观测看板**：运行轨迹落库（`AgentRun`）+ 分轮 token 记账 + 坐席端统计看板
+- [x] **单元测试与 CI 流水线**：GitHub Actions（lint / build / test），
+      覆盖工具校验与边界处理、上下文预算、检索切片清洗、工单 SLA 统计等纯逻辑
+- [x] 坐席工作台深化：工单分派、SLA 与状态流转看板
+- [x] **多 Provider 接入**：DeepSeek / Ollama 等 OpenAI 兼容服务在设置页配置
+      `llmBaseUrl` + `llmModel` 即可接入（含模型降级链）。Anthropic 原生协议不在支持范围
+      （tool use 为 content block 结构，与现有 OpenAI 兼容链路差异较大，收益不足）
 - [ ] Electron 打包发布、自动更新 (`electron-updater`) 与 API 地址可配置
-- [ ] 坐席工作台深化：工单分派、SLA 与状态流转看板
-- [ ] 单元测试、端到端测试 (E2E) 与 CI/CD 流水线
+- [ ] 端到端测试 (E2E)
 
 ---
 

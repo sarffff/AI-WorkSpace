@@ -3,11 +3,13 @@ import { ConfigService } from '@nestjs/config'
 import { PrismaService } from '@/prisma/prisma.service'
 import { SettingsService } from '@/modules/settings/settings.service'
 import { KnowledgeService, RagHit } from '@/modules/knowledge/knowledge.service'
-import { TicketsService } from '@/modules/tickets/tickets.service'
 import { MemoryService } from '@/modules/memory/memory.service'
 import OpenAI from 'openai'
 import type { Prisma } from '@prisma/client'
 import { LlmClient, LlmStreamResult, isInvalidRequestError } from '@/common/llm-client'
+import { AgentToolRegistry, CreateTicketTool } from './agent-tools'
+import type { TicketDraft, TicketRef } from './agent-tools'
+import { enforceLoopBudget, estimateTokens, trimHistoryToBudget } from './context-budget'
 
 // ===== Agent 流式事件协议（SSE 透传给前端） =====
 
@@ -17,18 +19,8 @@ export interface ToolTraceStep {
   summary?: string
 }
 
-export interface TicketRef {
-  id: string
-  title: string
-}
-
-// 建单确认事件：Agent 决定建单 → 推草稿给用户 → 暂停等待确认/取消
-export interface TicketDraft {
-  requestId: string
-  title: string
-  content: string
-  priority: string
-}
+// 工具契约相关类型定义在 agent-tools，此处再导出保持既有引用路径不变
+export type { TicketDraft, TicketRef } from './agent-tools'
 
 export type AgentStreamEvent =
   | { type: 'tool'; step: ToolTraceStep }
@@ -83,9 +75,6 @@ interface AgentRunTrace {
 // （内存态即可：确认窗口与 SSE 连接同生命周期，断连即清理）
 type ConfirmResolver = (approved: boolean) => void
 
-// 纯读工具集合：无副作用、不触发 HITL，同一轮内可并行执行（Promise.all）
-const READ_TOOLS = new Set(['search_knowledge', 'lookup_my_tickets', 'get_ticket'])
-
 // Agent 模式人设：说明工具使用策略（检索优先、超范围升级工单）与引用输出格式
 const AGENT_PERSONA = `你是 ServiceDeck 智能服务台的 IT 支持助手，可以调用工具完成任务，请遵守以下策略：
 1. 遇到 IT 排障、企业制度、流程类知识性问题（用户询问方法、步骤、规定等），先调用 search_knowledge 检索知识库，依据检索到的内容回答；
@@ -101,39 +90,6 @@ const AGENT_PERSONA = `你是 ServiceDeck 智能服务台的 IT 支持助手，�
 知识库中没有相关内容时，如实说明"未在知识库中找到相关内容"，不要编造引用或捏造出处。
 回答使用中文，条理清晰、简洁分点。`
 
-// 粗略 token 估算（API 未返回 usage 时的兜底）：CJK 每字 ≈ 1 token，ASCII ≈ 4 字符/token，其余 ≈ 2 字符/token
-function estimateTokens(text: string): number {
-  let tokens = 0
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i)
-    if (code >= 0x4e00 && code <= 0x9fff) tokens += 1
-    else if (code < 128) tokens += 0.25
-    else tokens += 0.5
-  }
-  return Math.ceil(tokens)
-}
-
-// 单条消息 token 估算：字符串/多段 content 与 assistant tool_calls 均计入（上下文预算裁剪用）
-function msgTokens(msg: OpenAI.Chat.ChatCompletionMessageParam): number {
-  let total = 0
-  const content = msg.content
-  if (typeof content === 'string') {
-    total += estimateTokens(content)
-  } else if (Array.isArray(content)) {
-    for (const part of content) {
-      const text = (part as { text?: string }).text
-      if (typeof text === 'string') total += estimateTokens(text)
-    }
-  } else if (content) {
-    total += estimateTokens(JSON.stringify(content))
-  }
-  const toolCalls = (msg as { tool_calls?: unknown }).tool_calls
-  if (Array.isArray(toolCalls) && toolCalls.length > 0) {
-    total += estimateTokens(JSON.stringify(toolCalls))
-  }
-  return total
-}
-
 @Injectable()
 export class ChatService {
   private readonly logger = new Logger(ChatService.name)
@@ -148,8 +104,10 @@ export class ChatService {
     private llmClient: LlmClient,
     private settingsService: SettingsService,
     private knowledgeService: KnowledgeService,
-    private ticketsService: TicketsService,
     private memoryService: MemoryService,
+    private toolRegistry: AgentToolRegistry,
+    // 建单落库 + 写记忆的唯一入口（确认后建单、断连后异步确认建单共用）
+    private createTicketTool: CreateTicketTool,
   ) {}
 
   // 根据当前 DB 配置动态创建 OpenAI 兼容客户端（设置页可实时修改）
@@ -257,40 +215,32 @@ export class ChatService {
     return Number.isFinite(v) && v > 0 ? v : def
   }
 
+  private contextLimit(): number {
+    return this.envInt('LLM_MAX_CONTEXT_TOKENS', 32000)
+  }
+
   // 硬上限断言：总 token 超过 LLM_MAX_CONTEXT_TOKENS 时，从 history 区间裁剪最旧消息
   // （system 注入片段与 RAG system 消息保留，裁剪最早的非 system 消息、保留最新），
   // 不静默截断；history 清空后仍超限则明确抛错，避免把超长上下文发给 API 报错。
+  // 返回被裁条数，供调用方下调 history 区间游标。
   private trimHistoryToBudget(
     messages: OpenAI.Chat.ChatCompletionMessageParam[],
     historyStart: number,
     historyEnd: number, // exclusive（不含末尾的当前提问）
-  ) {
-    const limit = this.envInt('LLM_MAX_CONTEXT_TOKENS', 32000)
-    let total = messages.reduce((sum, m) => sum + msgTokens(m), 0)
-    let dropped = 0
-    while (total > limit) {
-      let idx = -1
-      for (let i = historyStart; i < historyEnd - dropped; i++) {
-        if (messages[i].role !== 'system') {
-          idx = i
-          break
-        }
-      }
-      if (idx < 0) break
-      const [removed] = messages.splice(idx, 1)
-      total -= msgTokens(removed)
-      dropped++
-    }
-    if (total > limit) {
+  ): number {
+    const limit = this.contextLimit()
+    const res = trimHistoryToBudget(messages, historyStart, historyEnd, limit)
+    if (res.overLimit) {
       throw new Error(
-        `LLM context exceeds hard limit: ${total} > ${limit} tokens even after trimming history`,
+        `LLM context exceeds hard limit: ${res.total} > ${limit} tokens even after trimming history`,
       )
     }
-    if (dropped > 0) {
+    if (res.dropped > 0) {
       this.logger.warn(
-        `context over budget: trimmed ${dropped} oldest history messages (limit=${limit}, total=${total})`,
+        `context over budget: trimmed ${res.dropped} oldest history messages (limit=${limit}, total=${res.total})`,
       )
     }
+    return res.dropped
   }
 
   // 取会话归属用户（配置/RAG 检索范围都按会话主人计算）
@@ -629,296 +579,6 @@ ${context}
     return reply
   }
 
-  // ===== Agent 工具循环（P2 核心路径） =====
-
-  // 工具注册表：知识库检索 + 工单升级（OpenAI function calling 格式）
-  private agentTools(): OpenAI.Chat.Completions.ChatCompletionTool[] {
-    return [
-      {
-        type: 'function',
-        function: {
-          name: 'search_knowledge',
-          description:
-            '检索当前用户权限可见的企业知识库，返回最相关的文档片段（含文档名与相似度）。回答 IT/制度/流程类问题前应先调用。',
-          parameters: {
-            type: 'object',
-            properties: {
-              query: { type: 'string', description: '检索关键词或完整问题' },
-            },
-            required: ['query'],
-          },
-        },
-      },
-      {
-        type: 'function',
-        function: {
-          name: 'lookup_my_tickets',
-          description:
-            '查询当前用户自己创建的工单列表（含状态、优先级、受理坐席、最近动态，按更新时间倒序）。用户询问自己工单状态/进度/处理结果时调用，不要凭空回答。',
-          parameters: {
-            type: 'object',
-            properties: {
-              status: {
-                type: 'string',
-                enum: ['open', 'processing', 'resolved', 'closed'],
-                description: '可选：按工单状态过滤；不传返回全部工单',
-              },
-            },
-          },
-        },
-      },
-      {
-        type: 'function',
-        function: {
-          name: 'get_ticket',
-          description:
-            '按工单编号查询单条工单详情（状态、优先级、受理坐席、最近评论）。用户询问某个具体工单的情况时调用，不要凭空回答。',
-          parameters: {
-            type: 'object',
-            properties: {
-              id: { type: 'string', description: '工单编号' },
-            },
-            required: ['id'],
-          },
-        },
-      },
-      {
-        type: 'function',
-        function: {
-          name: 'create_ticket',
-          description:
-            '为用户创建人工处理工单，调用一次即可，不要重复调用。用户诉求明确需要人工操作时直接调用本工具、无需先检索或反复澄清确认，典型场景：账号/密码重置、权限开通/变更、硬件报修/更换、设备故障、需后台人工处理等；已有信息基本可推断时直接建单，个别缺失细节（如具体会议室、设备型号）写入 content 由人工跟进。知识库检索后仍无法解答的知识性问题也调用本工具升级人工。用户询问已有工单的状态/进度时不要调用本工具，改用 lookup_my_tickets 或 get_ticket 查询。',
-          parameters: {
-            type: 'object',
-            properties: {
-              title: {
-                type: 'string',
-                description:
-                  '工单标题，一句话概括用户诉求（60 字内），如「重置企业微信密码」「OA 开通管理员权限」',
-              },
-              content: {
-                type: 'string',
-                description: '问题描述，写入用户已有信息（账号、设备、影响范围等）与期望结果',
-              },
-              priority: {
-                type: 'string',
-                enum: ['low', 'normal', 'high', 'urgent'],
-                description: '优先级，默认 normal',
-              },
-            },
-            required: ['title', 'content'],
-          },
-        },
-      },
-    ]
-  }
-
-  // 执行单个工具调用，返回给模型的结果 + 前端轨迹摘要 + 溯源/工单副产物
-  // 防御幻觉参数：白名单只取 schema 定义的字段；类型不符 → 返回结构化错误让模型
-  // 下一轮修正（重试闭环），而非静默兜底产生 "[object Object]" 之类的脏数据
-  // registerConfirm：HITL 确认门 —— create_ticket 校验通过后调用，注册 pending
-  // 并返回 needsConfirm=true；实际建单由调用方（生成器层）在用户确认后执行
-  private async execTool(
-    owner: { id: string; role: string; department: string | null },
-    name: string,
-    args: Record<string, unknown>,
-    opts: {
-      createdTicket?: TicketRef
-      chatId?: string
-      registerConfirm?: (draft: { title: string; content: string; priority: string }) => void
-      // 评测模式：create_ticket 仅记录建单意图，不建单/不写记忆/不触发 HITL
-      evalMode?: boolean
-    } = {},
-  ): Promise<{
-    result: unknown
-    summary: string
-    sources?: RagHit[]
-    ticket?: TicketRef
-    needsConfirm?: boolean
-  }> {
-    try {
-      // 整体守卫：参数可能是 null/字符串/数组等非对象（模型幻觉），统一按参数错误处理
-      if (typeof args !== 'object' || args === null || Array.isArray(args)) {
-        return {
-          result: { error: `参数错误: ${name} 的参数必须是 JSON 对象，请修正后重试` },
-          summary: '参数错误',
-        }
-      }
-      if (name === 'search_knowledge') {
-        // 参数错误：返回错误文本回传给模型，让其修正后重试
-        if (typeof args.query !== 'string' || !args.query.trim()) {
-          return {
-            result: { error: '参数错误: query 必须是非空字符串，请修正参数后重试' },
-            summary: '参数错误',
-          }
-        }
-        const query = args.query.trim().slice(0, 200)
-        // topK 不传：由 Setting 表 ragTopK 决定
-        const hits = await this.knowledgeService.searchRelevant(owner, query)
-        return {
-          result:
-            hits.length > 0
-              ? hits.map((h) => ({
-                  documentName: h.documentName,
-                  sectionPath: h.sectionPath ?? null,
-                  score: h.score,
-                  content: h.content.slice(0, 500),
-                }))
-              : { message: '知识库中未检索到相关内容' },
-          summary: `"${query}" · 命中 ${hits.length} 片段`,
-          sources: hits,
-        }
-      }
-      if (name === 'lookup_my_tickets') {
-        // 可选状态过滤：枚举外取值（幻觉参数）按参数错误回传，让模型修正
-        const status =
-          typeof args.status === 'string' && args.status.trim() ? args.status.trim() : undefined
-        if (status && !['open', 'processing', 'resolved', 'closed'].includes(status)) {
-          return {
-            result: {
-              error:
-                '参数错误: status 必须是 open/processing/resolved/closed 之一，请修正参数后重试',
-            },
-            summary: '参数错误',
-          }
-        }
-        // 复用 TicketsService.list 的行级可见性，再收窄到当前用户自己创建的工单
-        const all = await this.ticketsService.list(owner)
-        const tickets = all
-          .filter((t) => t.creatorId === owner.id)
-          .filter((t) => !status || t.status === status)
-          .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
-        return {
-          result: {
-            total: tickets.length,
-            tickets: tickets.map((t) => ({
-              id: t.id,
-              title: t.title,
-              status: t.status,
-              priority: t.priority,
-              assignee: t.assignee?.name ?? null,
-              createdAt: t.createdAt.toISOString(),
-              updatedAt: t.updatedAt.toISOString(),
-              latestComment: t.comments[0]
-                ? {
-                    kind: t.comments[0].kind,
-                    content: t.comments[0].content.slice(0, 200),
-                    createdAt: t.comments[0].createdAt.toISOString(),
-                  }
-                : null,
-            })),
-          },
-          summary: `我的工单 ${tickets.length} 条`,
-        }
-      }
-      if (name === 'get_ticket') {
-        if (typeof args.id !== 'string' || !args.id.trim()) {
-          return {
-            result: { error: '参数错误: id 必须为工单编号字符串，请修正参数后重试' },
-            summary: '参数错误',
-          }
-        }
-        // 复用 TicketsService.detail 的可见性校验（员工仅本人，坐席/管理员全部）；
-        // 不存在/越权时抛 NotFoundException，由外层 catch 转结构化错误回传模型
-        const ticket = await this.ticketsService.detail(owner, args.id.trim())
-        return {
-          result: {
-            id: ticket.id,
-            title: ticket.title,
-            status: ticket.status,
-            priority: ticket.priority,
-            content: ticket.content.slice(0, 500),
-            assignee: ticket.assignee?.name ?? null,
-            createdAt: ticket.createdAt.toISOString(),
-            updatedAt: ticket.updatedAt.toISOString(),
-            recentComments: ticket.comments.slice(-2).map((c) => ({
-              kind: c.kind,
-              author: c.author?.name ?? null,
-              content: c.content.slice(0, 200),
-              createdAt: c.createdAt.toISOString(),
-            })),
-          },
-          summary: `工单「${ticket.title}」(${ticket.status})`,
-        }
-      }
-      if (name === 'create_ticket') {
-        // 评测模式（evalToolDecision）：只记录建单意图，不真正建单，
-        // 避免评测污染线上数据（无外部副作用，HITL 确认门同样跳过）
-        if (opts.evalMode) {
-          return {
-            result: { evaluation: 'create_ticket intent recorded' },
-            summary: '评测：记录建单意图（不建单）',
-          }
-        }
-        // 幂等：本会话已建单则不再重复创建，直接告知已有工单
-        if (opts.createdTicket) {
-          return {
-            result: {
-              ticketId: opts.createdTicket.id,
-              title: opts.createdTicket.title,
-              status: '已创建，请勿重复建单，直接告知用户工单编号',
-            },
-            summary: `已存在工单「${opts.createdTicket.title}」，跳过`,
-          }
-        }
-        if (typeof args.title !== 'string' || !args.title.trim()) {
-          return {
-            result: { error: '参数错误: title 必须为非空字符串，请修正参数后重试' },
-            summary: '参数错误',
-          }
-        }
-        if (typeof args.content !== 'string' || !args.content.trim()) {
-          return {
-            result: { error: '参数错误: content 必须为非空字符串，请修正参数后重试' },
-            summary: '参数错误',
-          }
-        }
-        const title = args.title.trim().slice(0, 80)
-        const content = args.content.trim().slice(0, 2000)
-        // 枚举外取值（幻觉参数）回退默认，低风险不必报错
-        const priority = ['low', 'normal', 'high', 'urgent'].includes(args.priority as string)
-          ? (args.priority as string)
-          : 'normal'
-        // HITL 确认门：参数校验通过后交由生成器层确认（yield 事件只能在生成器内发生）
-        if (opts.registerConfirm) {
-          opts.registerConfirm({ title, content, priority })
-          return {
-            result: null, // 占位：确认后由生成器层直接建单，不走本分支的建单逻辑
-            summary: '等待用户确认',
-            needsConfirm: true,
-          }
-        }
-        // —— 建单副作用边界（不可回滚）——
-        // 此处为实际落库建单点：工单一旦创建即为外部副作用，SSE 断连/后续生成失败均不回滚。
-        // 幂等保证：上方 opts.createdTicket 已存在时提前返回，绝不重复建单。
-        const ticket = await this.ticketsService.create(owner.id, {
-          title,
-          content,
-          priority,
-          source: 'agent',
-        })
-        this.logger.log(`agent created ticket "${title}" for user ${owner.id}`)
-        // 长期记忆：工单记录跨会话可回溯（"上次的工单怎么样了"）
-        await this.memoryService.remember(
-          owner.id,
-          'ticket',
-          `于 ${new Date().toLocaleDateString('zh-CN')} 创建工单「${title}」，单号 ${ticket.id.slice(0, 8)}`,
-          opts.chatId,
-        )
-        return {
-          result: { ticketId: ticket.id, title, status: '已创建，等待坐席受理' },
-          summary: `"${title}"`,
-          ticket: { id: ticket.id, title },
-        }
-      }
-      return { result: { error: `未知工具: ${name}` }, summary: `未知工具 ${name}` }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : '工具执行失败'
-      this.logger.error(`tool ${name} failed: ${message}`)
-      return { result: { error: message }, summary: `执行失败` }
-    }
-  }
-
   // ===== HITL 建单确认 =====
 
   // 用户对建单请求做出决定（前端确认卡调用）；未知/已处理请求返回 false
@@ -946,14 +606,14 @@ ${context}
       data: { status: 'approved' },
     })
     if (claimed.count === 0) return false
-    let created: { id: string; title: string }
+    let created: TicketRef
     try {
-      created = await this.ticketsService.create(draft.userId, {
-        title: draft.title,
-        content: draft.content,
-        priority: draft.priority,
-        source: 'agent',
-      })
+      // 建单 + 写记忆的唯一入口（与工具内建单、确认后建单同一实现）
+      created = await this.createTicketTool.createFromDraft(
+        draft.userId,
+        { title: draft.title, content: draft.content, priority: draft.priority },
+        draft.chatId ?? undefined,
+      )
     } catch (err) {
       // 建单失败回滚草稿为 pending，用户可重新确认；错误向上抛（接口 500，前端可重试）
       await this.prisma.ticketDraft
@@ -961,12 +621,6 @@ ${context}
         .catch(() => {})
       throw err
     }
-    await this.memoryService.remember(
-      draft.userId,
-      'ticket',
-      `于 ${new Date().toLocaleDateString('zh-CN')} 创建工单「${created.title}」，单号 ${created.id.slice(0, 8)}`,
-      draft.chatId,
-    )
     this.logger.log(
       JSON.stringify({
         chatId: draft.chatId,
@@ -1020,7 +674,10 @@ ${context}
     const historyStart = messages.length
     messages.push(...history, { role: 'user', content: prompt })
     // 硬上限断言：超限时裁剪最旧历史（system 注入片段与当前提问保留）
-    this.trimHistoryToBudget(messages, historyStart, messages.length - 1)
+    // historyEnd 为当前提问下标，随裁剪左移；工具循环内每轮复用它继续收敛预算
+    let historyEnd = messages.length - 1
+    historyEnd -= this.trimHistoryToBudget(messages, historyStart, historyEnd)
+    const contextLimit = this.contextLimit()
 
     // 工具决策循环轮数上限：Setting 表 ragAgentMaxRounds 按用户覆盖，env 为全局默认
     const rawRounds = await this.settingsService.get(owner.id, 'ragAgentMaxRounds')
@@ -1046,12 +703,14 @@ ${context}
       // —— 阶段一：工具决策循环 ——
       let directAnswer = ''
       let decisionModel = modelChain[0] // 决策循环实际使用的模型（可能已降级）
+      // 收敛标记：模型不再调工具（给出直答）即为收敛；触顶退出时为 false → 告警
+      let converged = false
       for (let round = 0; round < maxRounds; round++) {
         // 统一走 LlmClient：超时/重试/备用模型降级（非流式）
         const decisionStartedAt = Date.now()
         const { completion, model: usedModel } = await this.llmClient.complete(openai, modelChain, {
           messages,
-          tools: this.agentTools(),
+          tools: this.toolRegistry.definitions(),
           temperature: 0, // 工具决策调用：确定性优先，降低随机选错工具
         })
         decisionModel = usedModel
@@ -1076,18 +735,22 @@ ${context}
         const toolCalls = msg?.tool_calls?.filter((c) => c.type === 'function') || []
         if (toolCalls.length === 0) {
           directAnswer = msg?.content || ''
+          converged = true
           break
         }
 
         // 记录 assistant 的工具调用意图，随后执行并回填结果
+        // roundStart：本轮 assistant(tool_calls) 的下标 —— 轮末预算收敛时该下标起的
+        // 消息一律不动（模型必须拿到本轮刚取回的数据）
+        const roundStart = messages.length
         messages.push(msg as OpenAI.Chat.ChatCompletionMessageParam)
         let roundFailed = false
         let roundEmptySearch = false
 
         // 同一轮内纯读工具（无副作用、不触发 HITL）并行执行；create_ticket 等其余
         // 工具保持串行并置于读工具之后（确认门 yield 会阻塞，必须串行且靠后）
-        const readCalls = toolCalls.filter((c) => READ_TOOLS.has(c.function.name))
-        const writeCalls = toolCalls.filter((c) => !READ_TOOLS.has(c.function.name))
+        const readCalls = toolCalls.filter((c) => this.toolRegistry.isReadOnly(c.function.name))
+        const writeCalls = toolCalls.filter((c) => !this.toolRegistry.isReadOnly(c.function.name))
 
         if (readCalls.length > 0) {
           // 先按模型返回顺序统一发射 start，再并行执行，最后按同序发射 done
@@ -1102,17 +765,13 @@ ${context}
           }
           const readResults = await Promise.all(
             readCalls.map(async (call) => {
-              let args: Record<string, unknown> = {}
-              try {
-                args = JSON.parse(call.function.arguments || '{}')
-              } catch {
-                // 参数解析失败按空参数执行，由 execTool 兜底
-              }
               const toolStartedAt = Date.now()
-              const res = await this.execTool(owner, call.function.name, args, {
-                createdTicket: trace.ticket,
-                chatId,
-              })
+              // 参数解析与 schema 校验由 registry 统一处理（失败回传结构化错误让模型修正）
+              const res = await this.toolRegistry.execute(
+                call.function.name,
+                call.function.arguments,
+                { owner, createdTicket: trace.ticket, chatId },
+              )
               return { call, startedAt: toolStartedAt, ...res }
             }),
           )
@@ -1156,12 +815,6 @@ ${context}
         // —— 建单/未知工具组：串行执行（含 HITL 确认门，会阻塞等待用户） ——
         for (const call of writeCalls) {
           const fname = call.function.name
-          let args: Record<string, unknown> = {}
-          try {
-            args = JSON.parse(call.function.arguments || '{}')
-          } catch {
-            // 参数解析失败按空参数执行，由 execTool 兜底
-          }
           trace.steps.push({
             kind: 'tool',
             tool: fname,
@@ -1171,15 +824,13 @@ ${context}
           yield { type: 'tool', step: { tool: fname, status: 'start' } }
           const toolStartedAt = Date.now()
           // createdTicket 传入实现建单幂等（同一会话不重复建单）；chatId 用于工单记忆溯源
-          // HITL 确认门：execTool 返回 needsConfirm + 草稿 → 生成器推 confirm_required 事件
-          // （yield 只能发生在生成器内，故确认事件由本层发射，execTool 仅回传草稿）
+          // HITL 确认门：工具返回 needsConfirm + 草稿 → 生成器推 confirm_required 事件
+          // （yield 只能发生在生成器内，故确认事件由本层发射，工具仅回传草稿）
           let pendingDraft: TicketDraft | null = null
           let confirmDecision: Promise<boolean> | null = null
-          const { result, summary, sources, ticket, needsConfirm } = await this.execTool(
-            owner,
-            fname,
-            args,
-            {
+          const { result, summary, sources, ticket, needsConfirm } =
+            await this.toolRegistry.execute(fname, call.function.arguments, {
+              owner,
               createdTicket: trace.ticket,
               chatId,
               // 确认门：注册 pending → 由生成器先推事件再 await 用户决定
@@ -1191,8 +842,7 @@ ${context}
                 confirmDecision = decision
                 pendingDraft = { requestId, ...draft }
               },
-            },
-          )
+            })
           // 生成器内推确认事件并阻塞（普通 async 无法 yield，事件必须在此发射）
           if (needsConfirm && pendingDraft && confirmDecision) {
             // 草稿持久化：在推 confirm_required 之前落库（status=pending），
@@ -1293,14 +943,18 @@ ${context}
               })
               continue
             }
-            let created: { id: string; title: string }
+            let created: TicketRef
             try {
-              created = await this.ticketsService.create(owner.id, {
-                title: pendingDraft.title,
-                content: pendingDraft.content,
-                priority: pendingDraft.priority,
-                source: 'agent',
-              })
+              // 建单 + 写记忆的唯一入口（与工具内建单、断连后异步确认同一实现）
+              created = await this.createTicketTool.createFromDraft(
+                owner.id,
+                {
+                  title: pendingDraft.title,
+                  content: pendingDraft.content,
+                  priority: pendingDraft.priority,
+                },
+                chatId,
+              )
             } catch (err) {
               // 建单失败回滚草稿状态为 pending，用户可重新确认
               await this.prisma.ticketDraft
@@ -1311,13 +965,7 @@ ${context}
                 .catch(() => {})
               throw err
             }
-            await this.memoryService.remember(
-              owner.id,
-              'ticket',
-              `于 ${new Date().toLocaleDateString('zh-CN')} 创建工单「${created.title}」，单号 ${created.id.slice(0, 8)}`,
-              chatId,
-            )
-            trace.ticket = { id: created.id, title: created.title }
+            trace.ticket = created
             trace.toolCalls++
             const toolMs = Date.now() - toolStartedAt
             trace.steps.push({
@@ -1398,14 +1046,51 @@ ${context}
               '注意：知识库未检索到相关内容。若用户问题缺少关键信息（设备、报错、账号等），请直接向用户提出澄清问题；信息充分且确需人工处理时再创建工单，不要重复检索。',
           })
         }
+
+        // —— 轮末预算收敛 ——
+        // 每轮回填的 tool 结果（检索片段 500 字符 × topK）会持续推高上下文，
+        // 循环前裁剪一次不足以保证始终在预算内：先裁最旧历史，仍超限则把旧轮
+        // tool 结果压成占位（本轮结果完整保留，模型必须看到刚取回的数据）。
+        const budget = enforceLoopBudget(
+          messages,
+          historyStart,
+          historyEnd,
+          roundStart,
+          contextLimit,
+        )
+        historyEnd -= budget.dropped
+        if (budget.dropped > 0 || budget.compacted > 0) {
+          this.logger.warn(
+            JSON.stringify({
+              chatId,
+              userId: owner.id,
+              round: round + 1,
+              droppedHistory: budget.dropped,
+              compactedToolResults: budget.compacted,
+              total: budget.total,
+              limit: contextLimit,
+              reason: 'loop-context-budget',
+            }),
+          )
+        }
+        if (budget.overLimit) {
+          // 连本轮工具结果都放不进预算：继续调用必然被上游拒绝，明确报错。
+          // 已发生的工具副作用（如建单）不回滚，guarded 会保存半成品回答。
+          throw new Error(
+            `LLM context exceeds hard limit inside tool loop: ${budget.total} > ${contextLimit} tokens`,
+          )
+        }
       }
 
-      // 死循环哨兵：触顶退出说明模型反复调工具未收敛，告警便于观察
-      if (trace.toolCalls >= maxRounds) {
+      // 死循环哨兵：触顶退出（未收敛）说明模型反复调工具，告警便于观察。
+      // 判据用「轮数」而非工具调用数 —— 同一轮内读工具并行会产生多次调用，
+      // 用 toolCalls 比较会把正常收敛的会话误报为触顶。
+      if (!converged) {
         this.logger.warn(
           JSON.stringify({
             chatId,
             userId: owner.id,
+            rounds: trace.rounds,
             toolCalls: trace.toolCalls,
             maxRounds,
             reason: 'hit-round-cap',
@@ -1594,7 +1279,7 @@ ${context}
       // 统一走 LlmClient：超时/重试/备用模型降级（非流式，确定性优先）
       const { completion } = await this.llmClient.complete(openai, modelChain, {
         messages,
-        tools: this.agentTools(),
+        tools: this.toolRegistry.definitions(),
         temperature: 0, // 与线上工具决策调用一致：降低随机选错工具
       })
       rounds = round + 1
@@ -1612,13 +1297,11 @@ ${context}
       for (const call of calls) {
         const name = call.function.name
         toolCalls.push(name)
-        let args: Record<string, unknown> = {}
-        try {
-          args = JSON.parse(call.function.arguments || '{}')
-        } catch {
-          // 参数解析失败按空参数执行，由 execTool 兜底
-        }
-        const res = await this.execTool(owner, name, args, { evalMode: true })
+        // 与线上同一注册表/同一校验路径，仅 evalMode 让写工具不产生副作用
+        const res = await this.toolRegistry.execute(name, call.function.arguments, {
+          owner,
+          evalMode: true,
+        })
         // 检索命中片段汇总去重（documentId + sectionPath），供检索命中判定
         if (res.sources?.length) {
           for (const h of res.sources) {
