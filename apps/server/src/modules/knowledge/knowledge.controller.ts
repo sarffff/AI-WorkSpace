@@ -7,13 +7,15 @@ import {
   Post,
   UseGuards,
   UseInterceptors,
+  UseFilters,
   UploadedFile,
 } from '@nestjs/common'
 import { FileInterceptor } from '@nestjs/platform-express'
-import { KnowledgeService } from './knowledge.service'
+import { KnowledgeService, MAX_UPLOAD_BYTES } from './knowledge.service'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { CurrentUser } from '../auth/user-id.decorator'
 import type { SafeUser } from '../auth/auth.service'
+import { UploadErrorFilter } from './upload-error.filter'
 
 @Controller('knowledge')
 @UseGuards(JwtAuthGuard)
@@ -26,9 +28,12 @@ export class KnowledgeController {
     return await this.knowledgeService.getDocuments(user)
   }
 
-  // 上传文档（multipart：file + 可选 department 共享标记）→ 同步抽取/切块/向量化
+  // 上传文档（multipart：file + 可选 department 共享标记）→ 落库 + 入队后台索引
+  // 体积上限在此拦截：buffer 全程在内存并要进索引队列，无上限时单个大文件即可打爆内存。
+  // 超限由 multer 抛 LIMIT_FILE_SIZE，UploadErrorFilter 归一成 413 + 明确文案。
   @Post('documents')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  @UseFilters(new UploadErrorFilter(MAX_UPLOAD_BYTES))
   async uploadDocument(
     @CurrentUser() user: SafeUser,
     @UploadedFile() file: Express.Multer.File,

@@ -19,6 +19,12 @@ import { chunkDocument, ChunkConfig } from './chunking'
 import { BM25, tokenize } from './bm25'
 import { cleanText, detectMojibake } from './cleaning'
 
+// 单文件上传体积上限（env KNOWLEDGE_MAX_UPLOAD_MB，默认 20MB）。
+// 由 controller 的 FileInterceptor limits 拦在读入内存之前，service 再做一次兜底断言。
+const uploadMb = parseInt(process.env.KNOWLEDGE_MAX_UPLOAD_MB ?? '', 10)
+export const MAX_UPLOAD_BYTES =
+  (Number.isFinite(uploadMb) && uploadMb > 0 ? uploadMb : 20) * 1024 * 1024
+
 export interface RagHit {
   content: string
   score: number
@@ -172,6 +178,12 @@ export class KnowledgeService implements OnModuleInit {
     department?: string,
   ) {
     if (!file) throw new BadRequestException('未收到文件')
+    // 兜底断言：正常路径由 FileInterceptor limits 拦截，此处防御绕过/未配置拦截器的调用
+    if (file.size > MAX_UPLOAD_BYTES) {
+      throw new BadRequestException(
+        `文件过大，单个文件不得超过 ${(MAX_UPLOAD_BYTES / 1024 / 1024).toFixed(0)}MB`,
+      )
+    }
     const shareDept = department && department === user.department ? department : null
     const name = file.originalname || 'untitled'
     const ext = name.split('.').pop()?.toLowerCase() || ''
