@@ -810,6 +810,9 @@ export const ChatPage: React.FC = () => {
               content: res.data,
               timestamp: ts,
               model: selectedModel,
+              // 回退路径不跑工具循环：引用来源要显示，降级标记要让用户看见
+              sources: res.sources && res.sources.length > 0 ? res.sources : undefined,
+              degraded: true,
             }),
           )
         } catch {
@@ -921,6 +924,15 @@ export const ChatPage: React.FC = () => {
                       </span>
                       <span className="w-1 h-1 rounded-full bg-linestrong" />
                       <span className="text-[10px] text-t3">{msg.timestamp}</span>
+                      {/* 非流式回退：有 RAG 但没跑工具循环，不标注会被当成有升级保障的回答 */}
+                      {msg.degraded && (
+                        <span
+                          className="px-1.5 py-0.5 rounded-md text-[10px] font-mono border border-amber-500/30 bg-amber-500/10 text-amber-300"
+                          title="实时通道中断，已改用一次性返回：仍基于知识库作答，但不会自动升级工单"
+                        >
+                          降级回答 · 不会自动升级工单
+                        </span>
+                      )}
                     </div>
                     {msg.toolTrace && msg.toolTrace.length > 0 && (
                       <AgentTrace steps={msg.toolTrace} />

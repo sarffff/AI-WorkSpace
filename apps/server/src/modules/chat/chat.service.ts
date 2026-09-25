@@ -584,7 +584,9 @@ ${context}
         completion.usage?.prompt_tokens ?? estimateTokens(JSON.stringify(history) + prompt),
       completionTokens: completion.usage?.completion_tokens ?? estimateTokens(reply),
     })
-    return reply
+    // sources 一并回传：这条是非流式回退，没有 SSE 通道带引用，
+    // 不返回的话前端只能显示一段无出处的文字，用户无法判断可信度
+    return { reply, sources: rag.sources }
   }
 
   // ===== 答案满意度反馈 =====

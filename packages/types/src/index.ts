@@ -77,6 +77,12 @@ export interface Message {
   ticketRef?: TicketRef | null
   feedback?: MessageFeedback | null
   feedbackReason?: MessageFeedbackReason | null
+  /**
+   * SSE 中断后走非流式回退得到的回答：仍做 RAG，但不跑工具循环，
+   * 因此不会自动升级工单。展示时需明确标注，避免用户以为拿到了有升级保障的回答。
+   * 仅本轮会话内标记（服务端未持久化该状态），重载后引用来源仍在、标注消失。
+   */
+  degraded?: boolean
 }
 
 // ===== 知识库管理 =====
@@ -244,6 +250,8 @@ export interface CompletionRequest {
 export interface CompletionResponse {
   success: boolean
   data: string
+  /** 非流式回退路径的引用溯源（服务端已落库，回传给前端即时展示） */
+  sources?: MessageSource[]
 }
 
 // ===== Agent 运行运营看板 =====

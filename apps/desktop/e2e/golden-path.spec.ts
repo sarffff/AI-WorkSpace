@@ -126,3 +126,21 @@ test('拒绝建单：不产生工单，AI 继续对话', async () => {
   ])
   expect(backend.tickets).toHaveLength(0)
 })
+
+test('流式中断走非流式回退：仍给引用来源，并标注不会自动升级工单', async () => {
+  // 「触发中断」是替身的约定触发词：让流式端点返回 500，逼出客户端的 catch 回退分支
+  await win
+    .locator('textarea[placeholder="向智能助手发送指令..."]')
+    .fill('帮我看看 VPN 连不上 触发中断')
+  await win.locator('button[title="发送"]').click()
+
+  // 降级答案与引用来源
+  await expect(win.locator('text=（非流式）VPN 连接失败请联系 IT 解锁账号。')).toBeVisible()
+  await expect(win.locator('text=内容溯源 · 1 个知识库片段')).toBeVisible()
+  // 明确标注：这条回答绕过了 Agent 工具循环，不会升级工单
+  await expect(win.locator('text=降级回答 · 不会自动升级工单')).toBeVisible()
+  await expect(win.locator('text=已升级 · 自动创建工单')).toHaveCount(0)
+
+  expect(backend.requestLog).toContain('POST /chats/chat-e2e-1/completions')
+  expect(backend.tickets).toHaveLength(0)
+})

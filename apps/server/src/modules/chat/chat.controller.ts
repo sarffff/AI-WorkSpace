@@ -73,14 +73,14 @@ export class ChatController {
     @Body() body: { prompt: string; model?: string; useRag?: boolean; systemPrompt?: string },
   ) {
     await this.chatService.assertOwned(userId, id)
-    const data = await this.chatService.generateAiResponse(
+    const { reply, sources } = await this.chatService.generateAiResponse(
       id,
       body.prompt,
       body.model,
       body.useRag,
       body.systemPrompt,
     )
-    return { success: true, data }
+    return { success: true, data: reply, sources }
   }
 
   // 流式对话（SSE），逐 token 推送

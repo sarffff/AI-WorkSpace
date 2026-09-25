@@ -67,6 +67,8 @@ const SOURCES = [
 const ANSWER_APPROVED =
   '根据知识库，VPN 连接失败通常是账号锁定或证书过期。这个问题需要管理员介入解锁账号，已为你升级工单。'
 const ANSWER_REJECTED = '好的，先不升级工单。如果稍后仍需要人工处理，随时告诉我。'
+// 非流式回退（降级）路径的返回体：一次性给出，无 SSE
+const ANSWER_DEGRADED = '（非流式）VPN 连接失败请联系 IT 解锁账号。'
 
 export interface RecordedConfirm {
   requestId: string
@@ -191,7 +193,11 @@ export async function startMockBackend(): Promise<MockBackend> {
     return ticket
   }
 
-  const handleStream = async (res: ServerResponse, chatId: string) => {
+  const handleStream = async (res: ServerResponse, chatId: string, prompt: string) => {
+    // 触发词：让流式端点直接失败，驱动客户端走非流式回退（降级路径）
+    if (prompt.includes('触发中断')) {
+      return json(res, 500, { message: 'sse unavailable' })
+    }
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache',
@@ -299,8 +305,20 @@ export async function startMockBackend(): Promise<MockBackend> {
         },
       ])
     }
-    if (method === 'POST' && /^\/chats\/[^/]+\/completions\/stream$/.test(path)) {
-      return handleStream(res, path.split('/')[2])
+    const streamMatch = path.match(/^\/chats\/([^/]+)\/completions\/stream$/)
+    if (method === 'POST' && streamMatch) {
+      const body = await readBody(req)
+      return handleStream(res, streamMatch[1], String(body.prompt ?? ''))
+    }
+    // 非流式回退：真实服务端这条仍做 RAG 并落库，但不跑工具循环（不建单），
+    // 所以引用来源要回传、由客户端标注为降级回答
+    const completionsMatch = path.match(/^\/chats\/([^/]+)\/completions$/)
+    if (method === 'POST' && completionsMatch) {
+      return json(res, 201, {
+        success: true,
+        data: ANSWER_DEGRADED,
+        sources: SOURCES,
+      })
     }
     if (method === 'POST' && path === `/chats/${CHAT_ID}/confirm-ticket`) {
       const body = await readBody(req)

@@ -97,6 +97,10 @@ AI-Workspace/
       启动时把超过宽限期（`RAG_INDEX_STALE_GRACE_MIN`，默认 10 分钟）仍未完成的
       `processing` 文档收敛为 `failed` 并点名告警，前端不再无限轮询「处理中」。
       宽限期同时兜住多实例部署，避免误杀另一实例正在索引的文档
+- [x] **降级回退显式化**：SSE 中断时客户端回退到非流式 `POST /chats/:id/completions` ——
+      该路径仍做 RAG 并落库，但不跑工具循环（不会自动升级工单）。此前它静默返回一段
+      无出处、看起来与正常回答无异的答案；现在端点回传引用来源，答案上明确标注
+      「降级回答 · 不会自动升级工单」，并纳入 E2E 覆盖
 - [ ] Electron 打包发布：`electron-updater` 已在主进程接线（仅打包态检查更新），
       后端 API 地址支持 localStorage > `VITE_API_BASE_URL` > 默认值三级解析；
       仍缺更新源 (feed URL) 与签名产物，即「能打包」但「未可发布」
