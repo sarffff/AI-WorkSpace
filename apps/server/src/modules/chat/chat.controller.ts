@@ -157,6 +157,24 @@ export class ChatController {
     return { success: resolved }
   }
 
+  // 答案满意度反馈：👍/👎（👎 可带原因标签）；feedback 传 null 撤销评价
+  @Post(':id/messages/:messageId/feedback')
+  async setMessageFeedback(
+    @UserId() userId: string,
+    @Param('id') id: string,
+    @Param('messageId') messageId: string,
+    @Body() body: { feedback: 'up' | 'down' | null; reason?: string | null },
+  ) {
+    const data = await this.chatService.setMessageFeedback(
+      userId,
+      id,
+      messageId,
+      body?.feedback ?? null,
+      body?.reason,
+    )
+    return { success: true, data }
+  }
+
   // 待确认建单草稿列表（SSE 断连后前端重载页面据此恢复未决确认卡）
   @Get(':id/ticket-drafts')
   async ticketDrafts(@UserId() userId: string, @Param('id') id: string) {

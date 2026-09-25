@@ -64,9 +64,16 @@ model Message {
   sources          Json? // RAG 引用溯源（命中片段 + 得分 + 来源文档）
   promptTokens     Int? // 本次回答全部 LLM 调用的输入 token 数（工具循环/生成，不含后台摘要）
   completionTokens Int? // 输出 token 数
+  // 答案满意度反馈（仅 assistant 消息）：up | down，NULL 为未评价。
+  // 负例连同 feedbackReason 经 eval:collect 导出为评测候选用例。
+  feedback         String?
+  feedbackReason   String? // 仅 down 时可选：wrong | unsolved | bad_citation | irrelevant
+  feedbackAt       DateTime?
   chatId           String
   chat             Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
   createdAt        DateTime @default(now())
+
+  @@index([feedback, feedbackAt])
 }
 
 // 工单域：AI 无法自动解决时升级人工，构成服务台闭环
@@ -76,6 +83,9 @@ model Ticket {
   content    String    @db.Text
   status     String    @default("open") // open 待处理 | processing 处理中 | resolved 已解决 | closed 已关闭
   priority   String    @default("normal") // low | normal | high | urgent
+  // 工单分类（建单时由 Agent 判定，坐席可纠正）：分类分布统计与后续自动派单的路由依据
+  // account 账号权限 | hardware 硬件设备 | network 网络访问 | software 软件应用 | process 制度流程 | other 其他
+  category   String    @default("other")
   creatorId  String
   creator    User      @relation("TicketCreator", fields: [creatorId], references: [id], onDelete: Cascade)
   assigneeId String?
@@ -87,6 +97,7 @@ model Ticket {
   @@index([creatorId])
   @@index([assigneeId])
   @@index([status])
+  @@index([category])
   comments TicketComment[]
 }
 
@@ -114,6 +125,8 @@ model TicketDraft {
   title     String
   content   String   @db.Text
   priority  String   @default("normal") // low | normal | high | urgent
+  // 确认后的工单按本草稿重建（createFromDraft），故分类必须随草稿持久化
+  category  String   @default("other")
   status    String   @default("pending") // pending 待确认 | approved 已确认建单 | rejected 已拒绝
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -128,6 +141,9 @@ model AgentRun {
   id               String   @id @default(uuid())
   chatId           String
   userId           String
+  // 本次运行产出的那条 assistant 消息：打通「被评价的回答 → 当次工具轨迹」，
+  // 供 eval:collect 把👎反馈连同实际检索/建单行为一起导出为评测候选用例
+  messageId        String?
   model            String? // 实际使用的最终模型（决策/生成降级后的最终值）
   status           String   @default("completed") // completed 完整 | partial 断连中断
   rounds           Int      @default(0) // 决策循环轮数
@@ -144,6 +160,7 @@ model AgentRun {
 
   @@index([chatId, createdAt])
   @@index([userId, createdAt])
+  @@index([messageId])
 }
 
 model Document {

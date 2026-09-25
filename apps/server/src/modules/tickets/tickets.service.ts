@@ -1,6 +1,7 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common'
 import { PrismaService } from '@/prisma/prisma.service'
 import { CreateTicketDto, CreateTicketCommentDto, UpdateTicketDto } from './tickets.dto'
+import { CATEGORY_LABEL, TICKET_CATEGORIES } from './ticket-taxonomy'
 
 const AUTHOR_BRIEF = { select: { id: true, name: true, email: true, role: true } }
 
@@ -139,6 +140,18 @@ export class TicketsService {
     const avg = (xs: number[]) =>
       xs.length ? Math.round((xs.reduce((a, b) => a + b, 0) / xs.length) * 10) / 10 : null
 
+    // 按分类分布：识别高频问题类型 —— 高频且 AI 升级占比高的分类，
+    // 说明该类知识库覆盖不足，是知识沉淀的优先方向
+    const byCategory = TICKET_CATEGORIES.map((category) => {
+      const list = periodTickets.filter((t) => t.category === category)
+      return {
+        category,
+        total: list.length,
+        escalated: list.filter((t) => t.source === 'agent').length,
+        resolved: list.filter((t) => t.status === 'resolved' || t.status === 'closed').length,
+      }
+    }).filter((c) => c.total > 0)
+
     // 按优先级分布
     const byPriority = ['urgent', 'high', 'normal', 'low'].map((priority) => {
       const list = periodTickets.filter((t) => t.priority === priority)
@@ -184,6 +197,7 @@ export class TicketsService {
         thresholdHours: TicketsService.SLA_HOURS,
       },
       byPriority,
+      byCategory,
     }
   }
 
@@ -194,6 +208,7 @@ export class TicketsService {
         title: dto.title,
         content: dto.content,
         priority: dto.priority || 'normal',
+        category: dto.category || 'other',
         source: dto.source || 'manual',
       },
       include: {
@@ -249,15 +264,21 @@ export class TicketsService {
   async update(user: { id: string; role: string }, id: string, dto: UpdateTicketDto) {
     const ticket = await this.getVisibleTicket(user, id)
     if (!this.isStaff(user)) {
-      // 普通员工仅允许将自己的工单置为 closed
-      if (dto.status !== 'closed' || dto.priority || dto.assigneeId) {
+      // 普通员工仅允许将自己的工单置为 closed（分类纠正同属坐席权限）
+      if (dto.status !== 'closed' || dto.priority || dto.assigneeId || dto.category) {
         throw new NotFoundException('无权修改')
       }
     }
 
-    const data: { status?: string; priority?: string; assigneeId?: string | null } = {}
+    const data: {
+      status?: string
+      priority?: string
+      assigneeId?: string | null
+      category?: string
+    } = {}
     if (dto.status) data.status = dto.status
     if (dto.priority) data.priority = dto.priority
+    if (dto.category) data.category = dto.category
     if (dto.assigneeId !== undefined) data.assigneeId = dto.assigneeId
     // 指派受理人且未显式给状态时，自动进入处理中
     if (dto.assigneeId && !dto.status && ticket.status === 'open') data.status = 'processing'
@@ -278,6 +299,14 @@ export class TicketsService {
     }
     if (data.status && data.status !== ticket.status) {
       events.push(`状态变更为「${STATUS_LABEL[data.status]}」`)
+    }
+    // 分类纠正留痕：记录改前改后，便于回看 Agent 判错的分类分布
+    if (dto.category && dto.category !== ticket.category) {
+      events.push(
+        `分类由「${CATEGORY_LABEL[ticket.category] ?? ticket.category}」调整为「${
+          CATEGORY_LABEL[dto.category] ?? dto.category
+        }」`,
+      )
     }
     if (dto.assigneeId !== undefined && dto.assigneeId !== ticket.assigneeId) {
       if (dto.assigneeId) {

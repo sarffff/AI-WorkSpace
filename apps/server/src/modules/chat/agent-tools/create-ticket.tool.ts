@@ -1,8 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common'
 import { TicketsService } from '@/modules/tickets/tickets.service'
 import { MemoryService } from '@/modules/memory/memory.service'
+import {
+  CATEGORY_DESCRIPTION,
+  DEFAULT_TICKET_CATEGORY,
+  TICKET_CATEGORIES,
+} from '@/modules/tickets/ticket-taxonomy'
 import type { InferArgs } from './schema'
-import type { AgentTool, TicketRef, ToolContext, ToolResult } from './types'
+import type { AgentTool, TicketDraftInput, TicketRef, ToolContext, ToolResult } from './types'
 
 // ===== 建单工具（唯一的写工具）=====
 //
@@ -46,6 +51,13 @@ export class CreateTicketTool implements AgentTool<typeof CreateTicketTool.schem
       // 枚举外取值（幻觉参数）回退默认，低风险不必报错
       fallback: 'normal',
     },
+    category: {
+      type: 'string',
+      description: CATEGORY_DESCRIPTION,
+      enum: TICKET_CATEGORIES,
+      // 判错/漏填一律回退 other：分类错误不该打断建单（坐席可事后纠正）
+      fallback: DEFAULT_TICKET_CATEGORY,
+    },
   } as const
 
   readonly schema = CreateTicketTool.schema
@@ -78,10 +90,15 @@ export class CreateTicketTool implements AgentTool<typeof CreateTicketTool.schem
       }
     }
 
-    const priority = args.priority ?? 'normal'
+    const draft: TicketDraftInput = {
+      title: args.title,
+      content: args.content,
+      priority: args.priority ?? 'normal',
+      category: args.category ?? DEFAULT_TICKET_CATEGORY,
+    }
     // HITL 确认门：参数校验通过后交由生成器层确认（yield 事件只能在生成器内发生）
     if (ctx.registerConfirm) {
-      ctx.registerConfirm({ title: args.title, content: args.content, priority })
+      ctx.registerConfirm(draft)
       return {
         result: null, // 占位：确认后由生成器层直接建单，不走本分支的建单逻辑
         summary: '等待用户确认',
@@ -91,11 +108,7 @@ export class CreateTicketTool implements AgentTool<typeof CreateTicketTool.schem
 
     // —— 建单副作用边界（不可回滚）——
     // 无确认门时（非 HITL 配置）在此直接落库建单。
-    const ticket = await this.createFromDraft(
-      ctx.owner.id,
-      { title: args.title, content: args.content, priority },
-      ctx.chatId,
-    )
+    const ticket = await this.createFromDraft(ctx.owner.id, draft, ctx.chatId)
     this.logger.log(`agent created ticket "${ticket.title}" for user ${ctx.owner.id}`)
     return {
       result: { ticketId: ticket.id, title: ticket.title, status: '已创建，等待坐席受理' },
@@ -109,13 +122,14 @@ export class CreateTicketTool implements AgentTool<typeof CreateTicketTool.schem
   // 避免「建单成功但忘了写记忆」之类的分叉。
   async createFromDraft(
     userId: string,
-    draft: { title: string; content: string; priority: string },
+    draft: TicketDraftInput,
     chatId?: string,
   ): Promise<TicketRef> {
     const ticket = await this.ticketsService.create(userId, {
       title: draft.title,
       content: draft.content,
       priority: draft.priority,
+      category: draft.category,
       source: 'agent',
     })
     // 长期记忆：工单记录跨会话可回溯（"上次的工单怎么样了"）

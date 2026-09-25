@@ -16,6 +16,12 @@ export type {
   TicketCommentItem,
   TicketStats,
   TicketDraft,
+  TicketCategory,
+  TicketCategoryStats,
+  MessageFeedback,
+  MessageFeedbackReason,
+  FeedbackOverview,
+  FeedbackReasonItem,
   AgentRunOverview,
   AgentRunItem,
   AgentRunDetail,
@@ -30,3 +36,4 @@ export type {
   AuthResponse,
   AuthUser,
 } from '@servicedesk/types'
+export { TICKET_CATEGORY_OPTIONS, FEEDBACK_REASON_OPTIONS } from '@servicedesk/types'

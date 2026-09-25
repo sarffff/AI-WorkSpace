@@ -4,6 +4,7 @@ import type { MemoryService } from '@/modules/memory/memory.service'
 import { AgentToolRegistry } from './registry.service'
 import { CreateTicketTool } from './create-ticket.tool'
 import { GetTicketTool, LookupMyTicketsTool, SearchKnowledgeTool } from './read-tools'
+import { toJsonSchema, validateArgs } from './schema'
 import type { ToolContext } from './types'
 
 // 行为依据（与实现一致）：
@@ -126,7 +127,12 @@ describe('GetTicketTool', () => {
 })
 
 describe('CreateTicketTool', () => {
-  const args = { title: '重置密码', content: '账号 zhangsan', priority: 'high' as const }
+  const args = {
+    title: '重置密码',
+    content: '账号 zhangsan',
+    priority: 'high' as const,
+    category: 'account' as const,
+  }
 
   const build = () => {
     const tickets = {
@@ -192,6 +198,7 @@ describe('CreateTicketTool', () => {
       title: '重置密码',
       content: '账号 zhangsan',
       priority: 'high',
+      category: 'account',
     })
     expect(tickets.create).not.toHaveBeenCalled()
     expect(memory.remember).not.toHaveBeenCalled()
@@ -205,6 +212,7 @@ describe('CreateTicketTool', () => {
       title: '重置密码',
       content: '账号 zhangsan',
       priority: 'high',
+      category: 'account',
       source: 'agent',
     })
     expect(memory.remember).toHaveBeenCalledWith(
@@ -216,13 +224,51 @@ describe('CreateTicketTool', () => {
     expect(res.ticket).toEqual({ id: 'TK-NEW-123456789', title: '重置密码' })
   })
 
-  it('priority 缺省时按 normal 建单', async () => {
+  it('priority / category 缺省时按 normal / other 建单', async () => {
     const { tool, tickets } = build()
     await tool.execute({ title: 't', content: 'c' }, ctx())
     expect(tickets.create).toHaveBeenCalledWith(
       'u1',
-      expect.objectContaining({ priority: 'normal' }),
+      expect.objectContaining({ priority: 'normal', category: 'other' }),
     )
+  })
+
+  describe('分类参数（schema enum + fallback）', () => {
+    const validate = (raw: unknown) => validateArgs('create_ticket', CreateTicketTool.schema, raw)
+
+    it.each(['account', 'hardware', 'network', 'software', 'process', 'other'])(
+      '接受合法分类 %s',
+      (category) => {
+        const res = validate({ title: 't', content: 'c', category })
+        expect(res.ok).toBe(true)
+        expect(res.args?.category).toBe(category)
+      },
+    )
+
+    it.each([
+      ['中文标签（模型可能直接给标签而非枚举值）', '账号权限'],
+      ['臆造分类', 'printer'],
+      ['数字', 3],
+      ['空字符串', ''],
+    ])('分类为 %s 时回退 other 而非报错（分类判错不该打断建单）', (_label, category) => {
+      const res = validate({ title: 't', content: 'c', category })
+      expect(res.ok).toBe(true)
+      expect(res.args?.category).toBe('other')
+    })
+
+    it('六个分类都出现在给模型的 schema enum 中', () => {
+      const params = toJsonSchema(CreateTicketTool.schema) as {
+        properties: { category: { enum: string[] } }
+      }
+      expect(params.properties.category.enum).toEqual([
+        'account',
+        'hardware',
+        'network',
+        'software',
+        'process',
+        'other',
+      ])
+    })
   })
 
   describe('createFromDraft', () => {
@@ -230,7 +276,7 @@ describe('CreateTicketTool', () => {
       const { tool, memory } = build()
       const ref = await tool.createFromDraft(
         'u9',
-        { title: '重置密码', content: 'c', priority: 'low' },
+        { title: '重置密码', content: 'c', priority: 'low', category: 'account' },
         'chat-9',
       )
       expect(ref).toEqual({ id: 'TK-NEW-123456789', title: '重置密码' })
@@ -246,7 +292,12 @@ describe('CreateTicketTool', () => {
       const { tool, tickets, memory } = build()
       tickets.create.mockRejectedValue(new Error('DB down'))
       await expect(
-        tool.createFromDraft('u9', { title: 't', content: 'c', priority: 'low' }),
+        tool.createFromDraft('u9', {
+          title: 't',
+          content: 'c',
+          priority: 'low',
+          category: 'other',
+        }),
       ).rejects.toThrow('DB down')
       expect(memory.remember).not.toHaveBeenCalled()
     })

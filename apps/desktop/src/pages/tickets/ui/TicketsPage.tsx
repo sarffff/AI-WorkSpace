@@ -26,6 +26,8 @@ import type { RootState } from '@/app/providers/store'
 import {
   STATUS_META,
   PRIORITY_META,
+  CATEGORY_META,
+  CATEGORY_OPTIONS,
   formatTime,
   TicketDetailModal,
 } from '@/widgets/ticket-detail/ui/TicketDetailModal'
@@ -46,6 +48,7 @@ const TicketCreator: React.FC<{ onClose: () => void; onSaved: () => void }> = ({
   const [title, setTitle] = useState('')
   const [content, setContent] = useState('')
   const [priority, setPriority] = useState('normal')
+  const [category, setCategory] = useState('other')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
@@ -57,7 +60,12 @@ const TicketCreator: React.FC<{ onClose: () => void; onSaved: () => void }> = ({
     setBusy(true)
     setError('')
     try {
-      await api.createTicket({ title: title.trim(), content: content.trim(), priority })
+      await api.createTicket({
+        title: title.trim(),
+        content: content.trim(),
+        priority,
+        category,
+      })
       onSaved()
       onClose()
     } catch (err) {
@@ -124,6 +132,23 @@ const TicketCreator: React.FC<{ onClose: () => void; onSaved: () => void }> = ({
                   }`}
                 >
                   {PRIORITY_LABEL[p]}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label className="text-[10px] font-mono text-t3 tracking-wider">分类</label>
+            <div className="mt-1.5 flex items-center gap-2 flex-wrap">
+              {CATEGORY_OPTIONS.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setCategory(c)}
+                  className={`px-3 py-1.5 rounded-lg text-[11px] font-mono border transition-all ${
+                    category === c ? CATEGORY_META[c].style : 'text-t3 border-line hover:text-t2'
+                  }`}
+                >
+                  {CATEGORY_META[c].label}
                 </button>
               ))}
             </div>
@@ -296,6 +321,7 @@ const TicketStatsPanel: React.FC = () => {
     count: stats?.tickets[s] ?? 0,
   }))
   const maxStatus = Math.max(1, ...statusBars.map((b) => b.count))
+  const maxCategory = Math.max(1, ...(stats?.byCategory ?? []).map((c) => c.total))
 
   const cards = [
     {
@@ -434,6 +460,46 @@ const TicketStatsPanel: React.FC = () => {
                   </div>
                 ))}
               </div>
+            </div>
+
+            {/* 分类分布：AI 升级占比高的分类 = 知识库覆盖不足，知识沉淀优先方向 */}
+            <div className="rounded-lg bg-s4 border border-line p-3.5 lg:col-span-2">
+              <p className="text-[9px] font-mono text-t4 tracking-wider mb-2.5">
+                分类分布（AI 升级占比高 = 该类知识库覆盖不足）
+              </p>
+              {stats.byCategory.length === 0 ? (
+                <p className="text-[10px] font-mono text-t4">期内暂无工单</p>
+              ) : (
+                <div className="space-y-2">
+                  {stats.byCategory.map((c) => {
+                    const meta = CATEGORY_META[c.category] || CATEGORY_META.other
+                    const aiPct = c.total ? Math.round((c.escalated / c.total) * 100) : 0
+                    return (
+                      <div key={c.category} className="flex items-center gap-2.5">
+                        <span
+                          className={`text-[10px] font-mono px-1.5 py-0.5 rounded border shrink-0 w-[68px] text-center ${meta.style}`}
+                        >
+                          {meta.label}
+                        </span>
+                        <div className="flex-1 h-1.5 rounded-full bg-line overflow-hidden flex">
+                          {/* 深色段 = AI 升级，浅色段 = 手动创建 */}
+                          <div
+                            className="h-full bg-signal/70"
+                            style={{ width: `${(c.escalated / maxCategory) * 100}%` }}
+                          />
+                          <div
+                            className="h-full bg-linestrong"
+                            style={{ width: `${((c.total - c.escalated) / maxCategory) * 100}%` }}
+                          />
+                        </div>
+                        <span className="text-[10px] font-mono text-t3 w-[104px] text-right shrink-0">
+                          共 {c.total} · AI {aiPct}%
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           </div>
 
@@ -608,6 +674,7 @@ export const TicketsPage: React.FC = () => {
             {filtered.map((t, i) => {
               const st = STATUS_META[t.status] || STATUS_META.open
               const pr = PRIORITY_META[t.priority] || PRIORITY_META.normal
+              const cg = CATEGORY_META[t.category || 'other'] || CATEGORY_META.other
               return (
                 <div
                   key={t.id}
@@ -641,6 +708,11 @@ export const TicketsPage: React.FC = () => {
                         >
                           <span className={`w-1 h-1 rounded-full ${st.dot}`} />
                           {st.label}
+                        </span>
+                        <span
+                          className={`text-[9px] font-mono px-1.5 py-0.5 rounded border tracking-wider ${cg.style}`}
+                        >
+                          {cg.label}
                         </span>
                       </div>
                       <p className="text-xs text-t3 mt-1.5 leading-relaxed line-clamp-2">

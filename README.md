@@ -82,7 +82,16 @@ AI-Workspace/
 - [x] **多 Provider 接入**：DeepSeek / Ollama 等 OpenAI 兼容服务在设置页配置
       `llmBaseUrl` + `llmModel` 即可接入（含模型降级链）。Anthropic 原生协议不在支持范围
       （tool use 为 content block 结构，与现有 OpenAI 兼容链路差异较大，收益不足）
-- [ ] Electron 打包发布、自动更新 (`electron-updater`) 与 API 地址可配置
+- [x] **答案满意度反馈与评测数据飞轮**：assistant 消息支持 👍/👎 及负例原因
+      （`wrong` / `unsolved` / `bad_citation` / `irrelevant`），`AgentRun.messageId` 打通
+      「被评价的回答 → 当次工具轨迹」，`eval:collect` 将负例连同实际检索/建单行为导出为
+      评测候选用例；看板展示满意度与原因分布
+- [x] **工单分类体系**：`account` / `hardware` / `network` / `software` / `process` / `other`
+      以 `ticket-taxonomy.ts` 为服务端单一真相，同时驱动 DTO 校验、`create_ticket` 工具给
+      模型的 enum 与看板分类分布，为后续自动派单提供路由依据
+- [ ] Electron 打包发布：`electron-updater` 已在主进程接线（仅打包态检查更新），
+      后端 API 地址支持 localStorage > `VITE_API_BASE_URL` > 默认值三级解析；
+      仍缺更新源 (feed URL) 与签名产物，即「能打包」但「未可发布」
 - [ ] 端到端测试 (E2E)
 
 ---

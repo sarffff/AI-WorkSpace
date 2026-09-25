@@ -46,6 +46,24 @@ export const PRIORITY_META: Record<string, { label: string; style: string }> = {
   urgent: { label: '紧急', style: 'text-rose-300 border-rose-500/25 bg-rose-500/10' },
 }
 
+export const CATEGORY_META: Record<string, { label: string; style: string }> = {
+  account: { label: '账号权限', style: 'text-violet-300 border-violet-500/25 bg-violet-500/10' },
+  hardware: { label: '硬件设备', style: 'text-orange-300 border-orange-500/25 bg-orange-500/10' },
+  network: { label: '网络访问', style: 'text-cyan-300 border-cyan-500/25 bg-cyan-500/10' },
+  software: { label: '软件应用', style: 'text-indigo-300 border-indigo-500/25 bg-indigo-500/10' },
+  process: { label: '制度流程', style: 'text-teal-300 border-teal-500/25 bg-teal-500/10' },
+  other: { label: '其他', style: 'text-t3 border-line' },
+}
+
+export const CATEGORY_OPTIONS = [
+  'account',
+  'hardware',
+  'network',
+  'software',
+  'process',
+  'other',
+] as const
+
 export function formatTime(iso: string): string {
   const d = new Date(iso)
   const diff = Date.now() - d.getTime()
@@ -102,7 +120,7 @@ export const TicketDetailModal: React.FC<{
     }
   }
 
-  const update = async (input: { status?: string; assigneeId?: string }) => {
+  const update = async (input: { status?: string; assigneeId?: string; category?: string }) => {
     if (!detail) return
     try {
       await api.updateTicket(detail.id, input)
@@ -117,6 +135,7 @@ export const TicketDetailModal: React.FC<{
 
   const st = detail ? STATUS_META[detail.status] || STATUS_META.open : null
   const pr = detail ? PRIORITY_META[detail.priority] || PRIORITY_META.normal : null
+  const cg = CATEGORY_META[detail?.category || 'other'] || CATEGORY_META.other
 
   return (
     <div
@@ -153,6 +172,27 @@ export const TicketDetailModal: React.FC<{
                       >
                         <span className={`w-1 h-1 rounded-full ${st.dot}`} />
                         {st.label}
+                      </span>
+                    )}
+                    {/* 分类：坐席可下拉纠正 Agent 判错的分类（变更写入时间线） */}
+                    {isStaff ? (
+                      <select
+                        value={detail.category || 'other'}
+                        onChange={(e) => update({ category: e.target.value })}
+                        title="调整工单分类"
+                        className={`text-[9px] font-mono px-1.5 py-0.5 rounded border tracking-wider bg-transparent cursor-pointer outline-none hover:border-linestrong transition-colors ${cg.style}`}
+                      >
+                        {CATEGORY_OPTIONS.map((c) => (
+                          <option key={c} value={c} className="bg-s2 text-t1">
+                            {CATEGORY_META[c].label}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span
+                        className={`text-[9px] font-mono px-1.5 py-0.5 rounded border tracking-wider ${cg.style}`}
+                      >
+                        {cg.label}
                       </span>
                     )}
                   </div>

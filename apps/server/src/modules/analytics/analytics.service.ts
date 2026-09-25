@@ -31,11 +31,19 @@ export class AnalyticsService {
   async overview(user: SafeUser, days = 30) {
     this.assertStaff(user)
     const since = new Date(Date.now() - days * AnalyticsService.DAY_MS)
-    const runs = await this.prisma.agentRun.findMany({
-      where: { createdAt: { gte: since } },
-      orderBy: { createdAt: 'desc' },
-      take: AnalyticsService.MAX_OVERVIEW_ROWS,
-    })
+    const [runs, feedbackRows] = await Promise.all([
+      this.prisma.agentRun.findMany({
+        where: { createdAt: { gte: since } },
+        orderBy: { createdAt: 'desc' },
+        take: AnalyticsService.MAX_OVERVIEW_ROWS,
+      }),
+      // 满意度：期内被评价过的 assistant 消息（未评价的不进分母）
+      this.prisma.message.groupBy({
+        by: ['feedback', 'feedbackReason'],
+        where: { feedback: { not: null }, feedbackAt: { gte: since } },
+        _count: { _all: true },
+      }),
+    ])
 
     const totalRuns = runs.length
     let totalToolCalls = 0
@@ -87,6 +95,23 @@ export class AnalyticsService {
     const round1 = (n: number) => Math.round(n * 10) / 10
     const round3 = (n: number) => Math.round(n * 1000) / 1000
 
+    // 满意度聚合：分母只含已评价消息 —— 未评价占绝大多数，计入会把率稀释成噪声。
+    // 原因分布只统计 down（up 不携带原因）。
+    let up = 0
+    let down = 0
+    const reasonCounts: Record<string, number> = {}
+    for (const row of feedbackRows) {
+      const n = row._count._all
+      if (row.feedback === 'up') up += n
+      else if (row.feedback === 'down') {
+        down += n
+        // 未选原因的 👎 归入 unspecified，避免这部分在分布里凭空消失
+        const key = row.feedbackReason ?? 'unspecified'
+        reasonCounts[key] = (reasonCounts[key] || 0) + n
+      }
+    }
+    const rated = up + down
+
     return {
       periodDays: days,
       totalRuns,
@@ -106,6 +131,16 @@ export class AnalyticsService {
       daily: [...dailyMap.entries()]
         .map(([date, d]) => ({ date, ...d }))
         .sort((a, b) => a.date.localeCompare(b.date)),
+      feedback: {
+        up,
+        down,
+        rated,
+        // 满意度率 = 👍 / 已评价数；无人评价时为 null（不是 0）
+        satisfactionRate: rated ? round3(up / rated) : null,
+        reasonDistribution: Object.entries(reasonCounts)
+          .map(([reason, count]) => ({ reason, count }))
+          .sort((a, b) => b.count - a.count),
+      },
     }
   }
 

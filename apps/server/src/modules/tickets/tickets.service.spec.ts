@@ -14,6 +14,7 @@ interface TicketFixture {
   status: string
   priority: string
   source: string
+  category: string
   createdAt: Date
   updatedAt: Date
   comments: { kind: string; content: string; createdAt: Date }[]
@@ -29,6 +30,7 @@ const tickets: TicketFixture[] = [
     status: 'resolved',
     priority: 'urgent',
     source: 'manual',
+    category: 'network',
     createdAt: t0,
     updatedAt: t0,
     comments: [
@@ -45,6 +47,7 @@ const tickets: TicketFixture[] = [
     status: 'resolved',
     priority: 'urgent',
     source: 'manual',
+    category: 'network',
     createdAt: t0,
     updatedAt: new Date(t0.getTime() + 9 * 3600_000),
     comments: [
@@ -57,6 +60,7 @@ const tickets: TicketFixture[] = [
     status: 'closed',
     priority: 'high',
     source: 'manual',
+    category: 'hardware',
     createdAt: t0,
     updatedAt: new Date(t0.getTime() + 8 * 3600_000),
     comments: [
@@ -74,6 +78,7 @@ const tickets: TicketFixture[] = [
     status: 'open',
     priority: 'normal',
     source: 'agent',
+    category: 'account',
     createdAt: t0,
     updatedAt: t0,
     comments: [],
@@ -84,6 +89,7 @@ const tickets: TicketFixture[] = [
     status: 'resolved',
     priority: 'low',
     source: 'manual',
+    category: 'process',
     createdAt: t0,
     updatedAt: new Date(t0.getTime() + 99 * 3600_000),
     comments: [],
@@ -164,6 +170,18 @@ describe('TicketsService.stats', () => {
     ])
   })
 
+  it('按分类分组统计正确（total=0 的分类不返回）', async () => {
+    const { service } = makeService()
+    const result = await service.stats({ role: 'agent' })
+
+    expect(result.byCategory).toEqual([
+      { category: 'account', total: 1, escalated: 1, resolved: 0 },
+      { category: 'hardware', total: 1, escalated: 0, resolved: 1 },
+      { category: 'network', total: 2, escalated: 0, resolved: 2 },
+      { category: 'process', total: 1, escalated: 0, resolved: 1 },
+    ])
+  })
+
   it('查询条件：期内工单 + 系统事件时间线 + 未完结存量', async () => {
     const { service, prisma } = makeService()
     await service.stats({ role: 'agent' }, 7)
@@ -193,6 +211,7 @@ describe('TicketsService.stats', () => {
         status: 'open',
         priority: 'normal',
         source: 'manual',
+        category: 'other',
         createdAt: t0,
         updatedAt: t0,
         comments: [],

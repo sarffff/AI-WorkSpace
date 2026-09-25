@@ -12,6 +12,8 @@ import type {
   TicketStats,
   TicketDraft,
   ToolTraceStep,
+  MessageFeedback,
+  MessageFeedbackReason,
   AgentRunOverview,
   AgentRunItem,
   AgentRunDetail,
@@ -64,6 +66,9 @@ export interface ServerMessage {
   content: string
   model?: string
   sources?: MessageSource[] | null
+  /** 答案满意度反馈（历史消息重载后据此恢复已评价状态） */
+  feedback?: MessageFeedback | null
+  feedbackReason?: MessageFeedbackReason | null
   createdAt: string
 }
 
@@ -177,6 +182,23 @@ export class HttpClient {
   // 获取会话消息
   async getMessages(chatId: string): Promise<ServerMessage[]> {
     return this.request<ServerMessage[]>(`/chats/${chatId}/messages`)
+  }
+
+  // 答案满意度反馈：feedback 传 null 撤销评价；reason 仅 down 时有意义
+  async setMessageFeedback(
+    chatId: string,
+    messageId: string,
+    feedback: MessageFeedback | null,
+    reason?: MessageFeedbackReason | null,
+  ): Promise<{ id: string; feedback: MessageFeedback | null }> {
+    const res = await this.request<{
+      success: boolean
+      data: { id: string; feedback: MessageFeedback | null }
+    }>(`/chats/${chatId}/messages/${messageId}/feedback`, {
+      method: 'POST',
+      body: JSON.stringify({ feedback, reason: reason ?? null }),
+    })
+    return res.data
   }
 
   // ===== AI 对话 =====
@@ -333,6 +355,7 @@ export class HttpClient {
     title: string
     content: string
     priority?: string
+    category?: string
   }): Promise<TicketItem> {
     return this.request<TicketItem>('/tickets', {
       method: 'POST',
@@ -343,7 +366,12 @@ export class HttpClient {
   // 更新工单（状态/优先级/受理人；权限由服务端校验）
   async updateTicket(
     id: string,
-    input: { status?: string; priority?: string; assigneeId?: string | null },
+    input: {
+      status?: string
+      priority?: string
+      assigneeId?: string | null
+      category?: string
+    },
   ): Promise<TicketItem> {
     return this.request<TicketItem>(`/tickets/${id}`, {
       method: 'PATCH',

@@ -11,12 +11,17 @@ export interface TicketRef {
   title: string
 }
 
-// 建单确认事件：Agent 决定建单 → 推草稿给用户 → 暂停等待确认/取消
-export interface TicketDraft {
-  requestId: string
+// 建单草稿内容（不含 requestId）：工具产出 → 确认门 → 落库重建工单的载荷
+export interface TicketDraftInput {
   title: string
   content: string
   priority: string
+  category: string
+}
+
+// 建单确认事件：Agent 决定建单 → 推草稿给用户 → 暂停等待确认/取消
+export interface TicketDraft extends TicketDraftInput {
+  requestId: string
 }
 
 export interface ToolOwner {
@@ -34,7 +39,7 @@ export interface ToolContext {
    * HITL 确认门：create_ticket 校验通过后调用，注册待确认草稿。
    * 实际建单由生成器层在用户确认后执行（yield 只能发生在生成器内）。
    */
-  registerConfirm?: (draft: { title: string; content: string; priority: string }) => void
+  registerConfirm?: (draft: TicketDraftInput) => void
   /** 评测模式：写工具仅记录意图，不产生任何外部副作用 */
   evalMode?: boolean
 }

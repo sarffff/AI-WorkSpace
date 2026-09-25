@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { useSelector } from 'react-redux'
 import type { AgentRunDetail, AgentRunItem, AgentRunOverview, AgentRunStep } from '@servicedesk/sdk'
+import { FEEDBACK_REASON_OPTIONS } from '@servicedesk/sdk'
 import {
   BarChart3,
   Bot,
@@ -52,6 +53,12 @@ const TOOL_META: Record<string, { label: string; bar: string }> = {
 
 const toolLabel = (tool: string): string => TOOL_META[tool]?.label ?? tool
 const toolBar = (tool: string): string => TOOL_META[tool]?.bar ?? 'bg-t3'
+
+// 👎 原因 → 中文标签（unspecified = 点了👎但未选原因）
+const feedbackReasonLabel = (reason: string): string => {
+  if (reason === 'unspecified') return '未选原因'
+  return FEEDBACK_REASON_OPTIONS.find((o) => o.value === reason)?.label ?? reason
+}
 
 // ===== 每日 token 趋势（纯 CSS 柱状图：输出叠加在输入之上） =====
 const DailyTrend: React.FC<{ daily: AgentRunOverview['daily'] }> = ({ daily }) => {
@@ -545,12 +552,59 @@ const OverviewPanel: React.FC = () => {
                   </div>
                 )}
               </div>
+
+              {/* 答案满意度：分母只含已评价消息 */}
+              <div className="rounded-lg bg-s4 border border-line p-3.5">
+                <p className="text-[9px] font-mono text-t4 tracking-wider mb-2.5">
+                  答案满意度（仅统计已评价）
+                </p>
+                {overview.feedback.rated === 0 ? (
+                  <p className="text-[10px] font-mono text-t4 py-4 text-center">期内暂无用户评价</p>
+                ) : (
+                  <>
+                    <div className="flex items-baseline gap-2 mb-2.5">
+                      <span className="font-display text-lg font-bold text-t1">
+                        {pct(overview.feedback.satisfactionRate)}
+                      </span>
+                      <span className="text-[10px] font-mono text-t4">
+                        👍 {overview.feedback.up} · 👎 {overview.feedback.down} · 共{' '}
+                        {overview.feedback.rated} 条
+                      </span>
+                    </div>
+                    {overview.feedback.reasonDistribution.length > 0 && (
+                      <div className="space-y-1.5">
+                        <p className="text-[9px] font-mono text-t4">不满原因分布</p>
+                        {overview.feedback.reasonDistribution.map((r) => {
+                          const max = overview.feedback.reasonDistribution[0]?.count ?? 1
+                          return (
+                            <div key={r.reason} className="flex items-center gap-2.5">
+                              <span className="text-[10px] font-mono text-t3 w-24 shrink-0 truncate">
+                                {feedbackReasonLabel(r.reason)}
+                              </span>
+                              <div className="flex-1 h-1.5 rounded-full bg-line overflow-hidden">
+                                <div
+                                  className="h-full rounded-full bg-rose-400/70 transition-all"
+                                  style={{ width: `${(r.count / max) * 100}%` }}
+                                />
+                              </div>
+                              <span className="text-[10px] font-mono text-t2 w-6 text-right shrink-0">
+                                {r.count}
+                              </span>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
             </div>
           </div>
 
           <p className="text-[9px] font-mono text-t4 mt-3 leading-relaxed">
             命中率 = 检索命中（sources &gt; 0）运行占比 · 转化率 = 自动建单（ticketId 非空）运行占比
-            · 分布基于运行轨迹 steps 明细 · 单次聚合最多取最近 1000 条记录
+            · 分布基于运行轨迹 steps 明细 · 单次聚合最多取最近 1000 条记录 · 满意度率 = 👍 /
+            已评价数（未评价不进分母）
           </p>
         </>
       ) : null}

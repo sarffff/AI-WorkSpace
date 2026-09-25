@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, Logger } from '@nestjs/common'
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { PrismaService } from '@/prisma/prisma.service'
 import { SettingsService } from '@/modules/settings/settings.service'
@@ -10,6 +10,7 @@ import { LlmClient, LlmStreamResult, isInvalidRequestError } from '@/common/llm-
 import { AgentToolRegistry, CreateTicketTool } from './agent-tools'
 import type { TicketDraft, TicketRef } from './agent-tools'
 import { enforceLoopBudget, estimateTokens, trimHistoryToBudget } from './context-budget'
+import { isRatableMessage, normalizeFeedback } from './message-feedback'
 
 // ===== Agent 流式事件协议（SSE 透传给前端） =====
 
@@ -353,17 +354,20 @@ ${context}
   }
 
   // 客户端中断流后保存半成品回答（标记中止，前端续接"已停止"状态）
-  private async savePartialMessage(chatId: string, partial: string) {
+  // 返回消息 id（供 AgentRun 关联），保存失败时返回 undefined
+  private async savePartialMessage(chatId: string, partial: string): Promise<string | undefined> {
     try {
       // 幂等：run 生成器正常完成路径已保存完整回答，此处仅在 abort 后补充
-      await this.prisma.message.create({
+      const message = await this.prisma.message.create({
         data: { chatId, role: 'assistant', content: partial + '\n\n_[已中断]_ ' },
       })
       await this.touchChat(chatId)
+      return message.id
     } catch (err) {
       this.logger.warn(
         `save partial message failed: chat=${chatId}, ${err instanceof Error ? err.message : 'unknown'}`,
       )
+      return undefined
     }
   }
 
@@ -375,11 +379,14 @@ ${context}
 
   // Agent 运行轨迹落库（completed 正常完成 / partial 断连中断）；
   // 失败仅 logger.warn，不影响主流程；开关关闭时静默跳过
+  // messageId：本次运行产出的 assistant 消息 —— 打通「被评价的回答 → 当次工具轨迹」，
+  // 供 eval:collect 把👎反馈连同实际检索/建单行为导出为评测候选用例
   private async persistAgentRun(
     chatId: string,
     userId: string,
     status: 'completed' | 'partial',
     trace: AgentRunTrace,
+    messageId?: string,
   ) {
     if (!this.agentTraceEnabled()) return
     try {
@@ -387,6 +394,7 @@ ${context}
         data: {
           chatId,
           userId,
+          messageId: messageId ?? null,
           model: trace.model,
           status,
           rounds: trace.rounds,
@@ -579,6 +587,49 @@ ${context}
     return reply
   }
 
+  // ===== 答案满意度反馈 =====
+
+  // 对某条 AI 回答评价（👍/👎，👎 可带原因）；feedback 传 null 表示撤销评价。
+  // 重复提交按最后一次覆盖（非累加），天然幂等。
+  // 反馈连同 AgentRun.messageId 关联的工具轨迹，构成评测负例的真实来源。
+  async setMessageFeedback(
+    userId: string,
+    chatId: string,
+    messageId: string,
+    feedback: unknown,
+    reason?: unknown,
+  ) {
+    await this.assertOwned(userId, chatId)
+    const message = await this.prisma.message.findUnique({ where: { id: messageId } })
+    if (!message || !isRatableMessage(message, chatId)) {
+      // 不存在 / 不属于本会话 / 非 assistant 消息，统一按不存在处理（不泄露他人消息存在性）
+      throw new NotFoundException('消息不存在或不可评价')
+    }
+    const normalized = normalizeFeedback(feedback, reason)
+    if (!normalized.ok) {
+      throw new BadRequestException(normalized.error)
+    }
+    const updated = await this.prisma.message.update({
+      where: { id: messageId },
+      data: normalized.patch,
+    })
+    this.logger.log(
+      JSON.stringify({
+        chatId,
+        userId,
+        messageId,
+        event: 'message-feedback',
+        feedback: normalized.patch.feedback,
+        reason: normalized.patch.feedbackReason,
+      }),
+    )
+    return {
+      id: updated.id,
+      feedback: updated.feedback,
+      feedbackReason: updated.feedbackReason,
+    }
+  }
+
   // ===== HITL 建单确认 =====
 
   // 用户对建单请求做出决定（前端确认卡调用）；未知/已处理请求返回 false
@@ -611,7 +662,12 @@ ${context}
       // 建单 + 写记忆的唯一入口（与工具内建单、确认后建单同一实现）
       created = await this.createTicketTool.createFromDraft(
         draft.userId,
-        { title: draft.title, content: draft.content, priority: draft.priority },
+        {
+          title: draft.title,
+          content: draft.content,
+          priority: draft.priority,
+          category: draft.category,
+        },
         draft.chatId ?? undefined,
       )
     } catch (err) {
@@ -645,6 +701,7 @@ ${context}
       title: d.title,
       content: d.content,
       priority: d.priority,
+      category: d.category,
       createdAt: d.createdAt,
     }))
   }
@@ -856,6 +913,7 @@ ${context}
                 title: pendingDraft.title,
                 content: pendingDraft.content,
                 priority: pendingDraft.priority,
+                category: pendingDraft.category,
                 status: 'pending',
               },
               update: { status: 'pending' },
@@ -952,6 +1010,7 @@ ${context}
                   title: pendingDraft.title,
                   content: pendingDraft.content,
                   priority: pendingDraft.priority,
+                  category: pendingDraft.category,
                 },
                 chatId,
               )
@@ -1169,11 +1228,14 @@ ${context}
         })
       }
 
+      // 回答消息 id：落 AgentRun 时关联，使反馈可回溯到本次工具轨迹
+      let answerMessageId: string | undefined
       if (fullReply) {
-        await this.saveAiMessage(chatId, fullReply, trace.model, trace.sources, {
+        const saved = await this.saveAiMessage(chatId, fullReply, trace.model, trace.sources, {
           promptTokens: trace.promptTokens,
           completionTokens: trace.completionTokens,
         })
+        answerMessageId = saved.id
         // 周期性（每 10 条消息）后台提取用户长期偏好记忆
         void this.maybeExtractPreferences(owner, chatId, openai, modelChain)
       }
@@ -1197,7 +1259,7 @@ ${context}
       // 轨迹落库（completed；AGENT_TRACE=off 时跳过，失败仅告警不阻塞主流程）
       trace.replyChars = fullReply.length
       trace.totalMs = Date.now() - streamStartedAt
-      await this.persistAgentRun(chatId, owner.id, 'completed', trace)
+      await this.persistAgentRun(chatId, owner.id, 'completed', trace, answerMessageId)
     }.bind(this)
 
     // 外层守卫：客户端断连（controller 触发 generator.return()）时保存半成品回答，
@@ -1220,13 +1282,14 @@ ${context}
           for (const requestId of this.pendingConfirms.keys()) {
             if (requestId.startsWith(`${chatId}:`)) this.pendingConfirms.delete(requestId)
           }
+          let partialMessageId: string | undefined
           if (partialReply.trim()) {
-            await this.savePartialMessage(chatId, partialReply)
+            partialMessageId = await this.savePartialMessage(chatId, partialReply)
           }
           // 中断路径轨迹落库：status=partial，用已采集的 steps/token（新建记录，不覆盖 completed）
           trace.replyChars = partialReply.length
           trace.totalMs = Date.now() - streamStartedAt
-          await this.persistAgentRun(chatId, owner.id, 'partial', trace)
+          await this.persistAgentRun(chatId, owner.id, 'partial', trace, partialMessageId)
         }
       }
     }.bind(this)

@@ -52,6 +52,19 @@ export interface TicketRef {
   title: string
 }
 
+/** 答案满意度反馈取值（仅 assistant 消息；null 为未评价） */
+export type MessageFeedback = 'up' | 'down'
+
+/** 👎 原因标签（可选，用户可跳过） */
+export type MessageFeedbackReason = 'wrong' | 'unsolved' | 'bad_citation' | 'irrelevant'
+
+export const FEEDBACK_REASON_OPTIONS: { value: MessageFeedbackReason; label: string }[] = [
+  { value: 'wrong', label: '答案错误' },
+  { value: 'unsolved', label: '没解决我的问题' },
+  { value: 'bad_citation', label: '引用来源不准' },
+  { value: 'irrelevant', label: '答非所问' },
+]
+
 export interface Message {
   id: string
   sessionId: string
@@ -62,6 +75,8 @@ export interface Message {
   sources?: MessageSource[]
   toolTrace?: ToolTraceStep[]
   ticketRef?: TicketRef | null
+  feedback?: MessageFeedback | null
+  feedbackReason?: MessageFeedbackReason | null
 }
 
 // ===== 知识库管理 =====
@@ -115,6 +130,7 @@ export interface TicketCommentItem {
 
 /** HITL 建单确认草稿（Agent 决定建单后推给用户确认） */
 export interface TicketDraft {
+  category?: TicketCategory
   requestId: string
   title: string
   content: string
@@ -126,12 +142,25 @@ export interface TicketDetail extends TicketItem {
   comments: TicketCommentItem[]
 }
 
+/** 工单分类（6 类扁平）：分类分布统计与后续自动派单的路由依据 */
+export type TicketCategory = 'account' | 'hardware' | 'network' | 'software' | 'process' | 'other'
+
+export const TICKET_CATEGORY_OPTIONS: { value: TicketCategory; label: string }[] = [
+  { value: 'account', label: '账号权限' },
+  { value: 'hardware', label: '硬件设备' },
+  { value: 'network', label: '网络访问' },
+  { value: 'software', label: '软件应用' },
+  { value: 'process', label: '制度流程' },
+  { value: 'other', label: '其他' },
+]
+
 export interface TicketItem {
   id: string
   title: string
   content: string
   status: 'open' | 'processing' | 'resolved' | 'closed'
   priority: 'low' | 'normal' | 'high' | 'urgent'
+  category: TicketCategory
   creator: TicketUserBrief
   assignee: TicketUserBrief | null
   /** manual 手动创建 | agent AI 对话升级 */
@@ -149,6 +178,15 @@ export interface TicketPriorityStats {
   escalated: number
   resolved: number
   slaMet: number
+}
+
+/** 坐席看板：按分类的工单分布（仅返回有工单的分类）。
+ *  高频且 escalated 占比高的分类 = 知识库覆盖不足，知识沉淀的优先方向 */
+export interface TicketCategoryStats {
+  category: TicketCategory
+  total: number
+  escalated: number
+  resolved: number
 }
 
 /** 坐席看板统计（仅坐席/管理员） */
@@ -180,6 +218,7 @@ export interface TicketStats {
     thresholdHours: Record<string, number>
   }
   byPriority: TicketPriorityStats[]
+  byCategory: TicketCategoryStats[]
 }
 
 // ===== 提示词管理 =====
@@ -273,6 +312,24 @@ export interface AgentRunOverview {
   toolDistribution: ToolDistributionItem[]
   modelDistribution: ModelDistributionItem[]
   daily: DailyTokenStat[]
+  feedback: FeedbackOverview
+}
+
+/** 👎 原因分布项（unspecified = 用户点了👎但未选原因） */
+export interface FeedbackReasonItem {
+  reason: MessageFeedbackReason | 'unspecified' | string
+  count: number
+}
+
+/** 满意度概览：分母只含已评价消息（未评价占绝大多数，计入会把率稀释成噪声） */
+export interface FeedbackOverview {
+  up: number
+  down: number
+  /** 已评价消息数（up + down） */
+  rated: number
+  /** 满意度率 = up / rated，0-1；无人评价时为 null */
+  satisfactionRate: number | null
+  reasonDistribution: FeedbackReasonItem[]
 }
 
 /** 运行明细列表项（轻量，不含 steps） */

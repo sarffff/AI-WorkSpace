@@ -8,7 +8,15 @@ export { AgentToolRegistry } from './registry.service'
 export { CreateTicketTool } from './create-ticket.tool'
 export { GetTicketTool, LookupMyTicketsTool, SearchKnowledgeTool } from './read-tools'
 export { AGENT_TOOLS } from './types'
-export type { AgentTool, TicketDraft, TicketRef, ToolContext, ToolOwner, ToolResult } from './types'
+export type {
+  AgentTool,
+  TicketDraft,
+  TicketDraftInput,
+  TicketRef,
+  ToolContext,
+  ToolOwner,
+  ToolResult,
+} from './types'
 export type { Field, ToolSchema } from './schema'
 export { toJsonSchema, validateArgs } from './schema'
 

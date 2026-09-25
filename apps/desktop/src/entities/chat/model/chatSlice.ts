@@ -1,5 +1,11 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit'
-import type { Message, ChatSession, NavTab } from '@servicedesk/sdk'
+import type {
+  Message,
+  ChatSession,
+  NavTab,
+  MessageFeedback,
+  MessageFeedbackReason,
+} from '@servicedesk/sdk'
 
 interface ChatState {
   activeTab: NavTab
@@ -135,6 +141,23 @@ export const chatSlice = createSlice({
       const msg = msgs.find((m) => m.id === action.payload.id)
       if (msg) msg.content = action.payload.content
     },
+    // 答案满意度反馈：乐观更新（接口失败时由调用方回滚）
+    setMessageFeedback: (
+      state,
+      action: PayloadAction<{
+        id: string
+        sessionId: string
+        feedback: MessageFeedback | null
+        feedbackReason?: MessageFeedbackReason | null
+      }>,
+    ) => {
+      const msgs = state.messagesBySession[action.payload.sessionId]
+      if (!msgs) return
+      const msg = msgs.find((m) => m.id === action.payload.id)
+      if (!msg) return
+      msg.feedback = action.payload.feedback
+      msg.feedbackReason = action.payload.feedback === 'down' ? action.payload.feedbackReason : null
+    },
 
     setMessages: (state, action: PayloadAction<{ sessionId: string; messages: Message[] }>) => {
       state.messagesBySession[action.payload.sessionId] = action.payload.messages
@@ -158,6 +181,7 @@ export const {
   addMessage,
   appendToMessage,
   updateMessageContent,
+  setMessageFeedback,
   setMessages,
 } = chatSlice.actions
 

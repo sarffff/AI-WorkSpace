@@ -148,13 +148,24 @@ const staff: SafeUser = {
 
 const employee: SafeUser = { ...staff, id: 'emp-1', role: 'employee' }
 
-function makeService(overrides?: { runs?: RunFixture[]; detail?: RunFixture | null }) {
+function makeService(overrides?: {
+  runs?: RunFixture[]
+  detail?: RunFixture | null
+  feedbackRows?: {
+    feedback: string | null
+    feedbackReason: string | null
+    _count: { _all: number }
+  }[]
+}) {
   const prisma = {
     agentRun: {
       findMany: jest.fn().mockResolvedValue(overrides?.runs ?? runs),
       findUnique: jest
         .fn()
         .mockResolvedValue(overrides?.detail !== undefined ? overrides.detail : runs[0]),
+    },
+    message: {
+      groupBy: jest.fn().mockResolvedValue(overrides?.feedbackRows ?? []),
     },
   }
   return {
@@ -184,6 +195,14 @@ describe('AnalyticsService', () => {
     expect(result.avgTotalMs).toBe(5000)
     expect(result.searchHitRate).toBe(0.667) // 命中 run-a/run-c，2/3
     expect(result.ticketConversionRate).toBe(0.667) // 建单 run-a/run-c，2/3
+    // 默认无反馈：分母为 0 → 满意度率为 null（不是 0）
+    expect(result.feedback).toEqual({
+      up: 0,
+      down: 0,
+      rated: 0,
+      satisfactionRate: null,
+      reasonDistribution: [],
+    })
   })
 
   it('overview 分布：工具按 steps 统计、模型 null 归入 unknown、每日按日期升序', async () => {
@@ -231,6 +250,27 @@ describe('AnalyticsService', () => {
     expect(result.toolDistribution).toEqual([])
     expect(result.modelDistribution).toEqual([])
     expect(result.daily).toEqual([])
+  })
+
+  it('overview 聚合反馈：满意度率只按已评价消息计，无原因的 👎 归入 unspecified', async () => {
+    const { service } = makeService({
+      feedbackRows: [
+        { feedback: 'up', feedbackReason: null, _count: { _all: 7 } },
+        { feedback: 'down', feedbackReason: 'wrong', _count: { _all: 2 } },
+        { feedback: 'down', feedbackReason: 'unsolved', _count: { _all: 1 } },
+        { feedback: 'down', feedbackReason: null, _count: { _all: 1 } },
+      ],
+    })
+    const result = await service.overview(staff)
+    expect(result.feedback.up).toBe(7)
+    expect(result.feedback.down).toBe(4)
+    expect(result.feedback.rated).toBe(11)
+    expect(result.feedback.satisfactionRate).toBe(0.636) // 7/11
+    expect(result.feedback.reasonDistribution).toEqual([
+      { reason: 'wrong', count: 2 },
+      { reason: 'unsolved', count: 1 },
+      { reason: 'unspecified', count: 1 },
+    ])
   })
 
   it('listRuns 按倒序分页查询，仅取轻量字段', async () => {

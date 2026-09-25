@@ -14,6 +14,7 @@ import {
   setIsGenerating,
   setCurrentChat,
   setMessages,
+  setMessageFeedback,
   setSessions,
   renameChat,
   setActiveTab,
@@ -24,11 +25,14 @@ import { api, syncToken } from '@/shared/api/client'
 import { TicketDetailModal } from '@/widgets/ticket-detail/ui/TicketDetailModal'
 import type {
   MessageSource,
+  MessageFeedback,
+  MessageFeedbackReason,
   PromptItem,
   TicketDraft,
   TicketRef,
   ToolTraceStep,
 } from '@servicedesk/sdk'
+import { FEEDBACK_REASON_OPTIONS, TICKET_CATEGORY_OPTIONS } from '@servicedesk/sdk'
 import {
   Send,
   Bot,
@@ -46,6 +50,8 @@ import {
   Check,
   Loader2,
   ShieldQuestion,
+  ThumbsUp,
+  ThumbsDown,
 } from 'lucide-react'
 
 const FLUSH_INTERVAL = 60
@@ -227,6 +233,94 @@ const AgentTrace: React.FC<{ steps: ToolTraceStep[]; live?: boolean }> = ({ step
   )
 }
 
+// 答案满意度反馈：👍/👎，点👎展开原因标签（可跳过直接提交）。
+// 再次点击已选按钮 = 撤销评价。负例连同原因经 eval:collect 导出为评测候选用例。
+const MessageFeedbackBar: React.FC<{
+  feedback?: MessageFeedback | null
+  feedbackReason?: MessageFeedbackReason | null
+  onVote: (feedback: MessageFeedback | null, reason?: MessageFeedbackReason | null) => void
+}> = ({ feedback, feedbackReason, onVote }) => {
+  const [reasonOpen, setReasonOpen] = useState(false)
+
+  const clickUp = () => {
+    setReasonOpen(false)
+    onVote(feedback === 'up' ? null : 'up')
+  }
+  const clickDown = () => {
+    if (feedback === 'down') {
+      // 已是👎：再次点击撤销
+      setReasonOpen(false)
+      onVote(null)
+      return
+    }
+    // 先记下👎（不阻塞），再展开原因供可选补充
+    onVote('down')
+    setReasonOpen(true)
+  }
+
+  return (
+    <div className="mt-2">
+      <div className="flex items-center gap-1">
+        <button
+          onClick={clickUp}
+          title="回答有帮助"
+          className={`p-1 rounded-md border transition-colors ${
+            feedback === 'up'
+              ? 'text-brand border-brand/40 bg-brand/10'
+              : 'text-t4 border-transparent hover:text-t2 hover:bg-s3'
+          }`}
+        >
+          <ThumbsUp className="w-3 h-3" />
+        </button>
+        <button
+          onClick={clickDown}
+          title="回答没帮助"
+          className={`p-1 rounded-md border transition-colors ${
+            feedback === 'down'
+              ? 'text-rose-300 border-rose-500/40 bg-rose-500/10'
+              : 'text-t4 border-transparent hover:text-t2 hover:bg-s3'
+          }`}
+        >
+          <ThumbsDown className="w-3 h-3" />
+        </button>
+        {feedback === 'down' && feedbackReason && !reasonOpen && (
+          <span className="ml-1 text-[9px] font-mono text-t4">
+            {FEEDBACK_REASON_OPTIONS.find((o) => o.value === feedbackReason)?.label}
+          </span>
+        )}
+      </div>
+      {/* 原因标签：可选，点任一即提交；「跳过」直接收起（👎 已记录） */}
+      {reasonOpen && feedback === 'down' && (
+        <div className="mt-1.5 flex items-center gap-1.5 flex-wrap fade-in">
+          <span className="text-[9px] font-mono text-t4">哪里不好？（可跳过）</span>
+          {FEEDBACK_REASON_OPTIONS.map((o) => (
+            <button
+              key={o.value}
+              onClick={() => {
+                onVote('down', o.value)
+                setReasonOpen(false)
+              }}
+              className={`px-1.5 py-0.5 rounded border text-[9px] font-mono transition-colors ${
+                feedbackReason === o.value
+                  ? 'text-rose-300 border-rose-500/40 bg-rose-500/10'
+                  : 'text-t3 border-line hover:text-t2 hover:border-linestrong'
+              }`}
+            >
+              {o.label}
+            </button>
+          ))}
+          <button
+            onClick={() => setReasonOpen(false)}
+            className="px-1.5 py-0.5 text-[9px] font-mono text-t4 hover:text-t2 transition-colors"
+          >
+            跳过
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // Agent 自动创建的工单通知卡片：点击直接打开工单详情（时间线/评论/状态操作）
 const TicketNotice: React.FC<{ ticket: TicketRef; onOpen: () => void }> = ({ ticket, onOpen }) => {
   const dispatch = useDispatch()
@@ -277,6 +371,8 @@ const TicketConfirmCard: React.FC<{
 }> = ({ draft, onDecide }) => {
   const [busy, setBusy] = useState(false)
   const pr = PRIORITY_LABEL[draft.priority] || '普通'
+  // Agent 判定的分类：确认前让用户看到（判错时坐席可在工单详情纠正）
+  const cg = TICKET_CATEGORY_OPTIONS.find((o) => o.value === (draft.category || 'other'))?.label
 
   const decide = async (approved: boolean) => {
     if (busy || draft.resolved) return
@@ -297,6 +393,7 @@ const TicketConfirmCard: React.FC<{
         <div className="min-w-0">
           <p className="text-[10px] font-mono text-signal/80 tracking-wider">
             确认创建工单 · 优先级 {pr}
+            {cg ? ` · ${cg}` : ''}
           </p>
           <p className="text-xs text-t1 font-semibold truncate">{draft.title}</p>
         </div>
@@ -439,6 +536,9 @@ export const ChatPage: React.FC = () => {
               }),
               model: m.model || undefined,
               sources: m.sources || undefined,
+              // 恢复已评价状态（重载页面后按钮仍高亮）
+              feedback: m.feedback || null,
+              feedbackReason: m.feedbackReason || null,
             })),
           }),
         )
@@ -451,6 +551,39 @@ export const ChatPage: React.FC = () => {
     if (!id || !content) return
     dispatch(updateMessageContent({ id, sessionId: currentChatId || '', content }))
   }, [dispatch, currentChatId])
+
+  // 满意度反馈：先乐观更新（点击即有反馈），接口失败则回滚到原值
+  const handleVote = useCallback(
+    async (
+      messageId: string,
+      feedback: MessageFeedback | null,
+      reason?: MessageFeedbackReason | null,
+    ) => {
+      if (!currentChatId) return
+      const before = (messagesBySession[currentChatId] || []).find((m) => m.id === messageId)
+      dispatch(
+        setMessageFeedback({
+          id: messageId,
+          sessionId: currentChatId,
+          feedback,
+          feedbackReason: reason ?? null,
+        }),
+      )
+      try {
+        await api.setMessageFeedback(currentChatId, messageId, feedback, reason)
+      } catch {
+        dispatch(
+          setMessageFeedback({
+            id: messageId,
+            sessionId: currentChatId,
+            feedback: before?.feedback ?? null,
+            feedbackReason: before?.feedbackReason ?? null,
+          }),
+        )
+      }
+    },
+    [dispatch, currentChatId, messagesBySession],
+  )
 
   const startFlushTimer = useCallback(() => {
     if (timerRef.current) return
@@ -801,6 +934,14 @@ export const ChatPage: React.FC = () => {
                       />
                     )}
                     {msg.sources && msg.sources.length > 0 && <SourceCards sources={msg.sources} />}
+                    {/* 满意度反馈：生成中的最后一条不显示（回答未完成无从评价） */}
+                    {!(isGenerating && msg.id === messages[messages.length - 1].id) && (
+                      <MessageFeedbackBar
+                        feedback={msg.feedback}
+                        feedbackReason={msg.feedbackReason}
+                        onVote={(feedback, reason) => handleVote(msg.id, feedback, reason)}
+                      />
+                    )}
                   </div>
                 </div>
               ),
