@@ -13,10 +13,17 @@ import { Prisma } from '@prisma/client'
 import { PrismaService } from '@/prisma/prisma.service'
 import { SettingsService } from '@/modules/settings/settings.service'
 import { LlmClient } from '@/common/llm-client'
-import { EmbeddingsClient, cosineSimilarity } from '@/common/embeddings'
+import { EmbeddingsClient } from '@/common/embeddings'
 import { IndexingQueueService } from './indexing-queue.service'
 import { chunkDocument, ChunkConfig } from './chunking'
-import { BM25, tokenize } from './bm25'
+import { tokenize } from './bm25'
+import {
+  HitChunk,
+  LeafInput,
+  RetrievalIndex,
+  RetrievalIndexCache,
+  scopeKeyOf,
+} from './retrieval-index'
 import { cleanText, detectMojibake } from './cleaning'
 
 // 单文件上传体积上限（env KNOWLEDGE_MAX_UPLOAD_MB，默认 20MB）。
@@ -24,6 +31,12 @@ import { cleanText, detectMojibake } from './cleaning'
 const uploadMb = parseInt(process.env.KNOWLEDGE_MAX_UPLOAD_MB ?? '', 10)
 export const MAX_UPLOAD_BYTES =
   (Number.isFinite(uploadMb) && uploadMb > 0 ? uploadMb : 20) * 1024 * 1024
+
+// 语料检索索引的存活时间（env RAG_INDEX_TTL_MS，默认 30s）。
+// 同进程内的语料变更靠代数失效即时可见，TTL 只为多进程部署兜底，不宜设长。
+const indexTtlMs = parseInt(process.env.RAG_INDEX_TTL_MS ?? '', 10)
+export const RETRIEVAL_INDEX_TTL_MS =
+  Number.isFinite(indexTtlMs) && indexTtlMs >= 0 ? indexTtlMs : 30_000
 
 export interface RagHit {
   content: string
@@ -45,6 +58,17 @@ function visibleDocFilter(user: { id: string; role: string; department: string |
   const or: Record<string, unknown>[] = [{ userId: user.id }]
   if (user.department) or.push({ department: user.department })
   return { OR: or }
+}
+
+// 数据库行 → 流水线内部形状：文档名拍平，使来自索引的叶子与来自库的父块可同构处理
+function toHitChunk(row: ChunkWithDoc): HitChunk {
+  return {
+    id: row.id,
+    documentId: row.documentId,
+    documentName: row.document.name,
+    sectionPath: row.sectionPath,
+    content: row.content,
+  }
 }
 
 // 支持解析的扩展名 → 抽取方式
@@ -81,6 +105,10 @@ const RRF_K = 60
 export class KnowledgeService implements OnModuleInit {
   private readonly logger = new Logger(KnowledgeService.name)
   private rewriteClient: OpenAI | null = null
+
+  // 语料变更后自增，缓存见到代数变化即整体作废（详见 RetrievalIndexCache）
+  private indexGeneration = 0
+  private readonly indexCache = new RetrievalIndexCache(RETRIEVAL_INDEX_TTL_MS)
 
   constructor(
     private prisma: PrismaService,
@@ -282,6 +310,8 @@ export class KnowledgeService implements OnModuleInit {
         where: { id: documentId },
         data: { chunks: parents.length, status: 'indexed' },
       })
+      // 新叶子上线：语料索引必须作废，否则刚上传的文档在 TTL 内检索不到
+      this.invalidateRetrievalIndex()
       this.queue.update(documentId, { stage: 'done', percent: 100, chunks: parents.length })
       this.logger.log(`indexed "${doc.name}": ${parents.length} parents / ${leaves.length} leaves`)
     } catch (err: unknown) {
@@ -303,10 +333,57 @@ export class KnowledgeService implements OnModuleInit {
       throw new NotFoundException('文档不存在')
     }
     await this.prisma.document.delete({ where: { id } })
+    // 级联删掉了该文档全部块：不清索引的话已删内容仍可能被检出并作为引用展示
+    this.invalidateRetrievalIndex()
     return { success: true }
   }
 
   // ===== 向量检索（RAG，行级权限过滤后仅在可见语料中检索）=====
+
+  // 取当前可见范围的语料索引（同范围多次检索复用，语料变更后代数失效重建）
+  private async getRetrievalIndex(user: {
+    id: string
+    role: string
+    department: string | null
+  }): Promise<RetrievalIndex> {
+    return this.indexCache.resolve(scopeKeyOf(user), this.indexGeneration, () =>
+      this.buildRetrievalIndex(user),
+    )
+  }
+
+  // 语料变更（索引完成 / 删除文档）后调用：同进程内的下一次检索立即重建
+  private invalidateRetrievalIndex() {
+    this.indexGeneration++
+  }
+
+  // 行级权限仍由 SQL 过滤（本人上传 ∪ 本部门共享，管理员全量），
+  // 缓存键只用于复用同一可见范围下必然一致的结果
+  private async buildRetrievalIndex(user: {
+    id: string
+    role: string
+    department: string | null
+  }): Promise<RetrievalIndex> {
+    // 加载可见叶子块（旧版单级块 embedding 非空且 parentId 为空 → 视为叶子，命中后返回自身）
+    const rows = await this.prisma.knowledgeChunk.findMany({
+      where: {
+        embedding: { not: Prisma.DbNull },
+        document: { status: 'indexed', ...visibleDocFilter(user) },
+      },
+      include: { document: { select: { name: true } } },
+    })
+    // 叶子文本 = 上下文前缀 + 正文（与索引侧拼接一致）
+    const inputs: LeafInput[] = rows.map((c) => ({
+      id: c.id,
+      parentId: c.parentId,
+      documentId: c.documentId,
+      documentName: c.document.name,
+      sectionPath: c.sectionPath,
+      content: c.content,
+      leafText: this.prefixedText(c.document.name, c.sectionPath, c.content),
+      embedding: c.embedding as number[] | null,
+    }))
+    return new RetrievalIndex(inputs)
+  }
 
   // 混合检索流水线：
   // 查询改写 → 稠密余弦（语义门控） + 本地 BM25（词法召回） → RRF 融合 → 去重到父块
@@ -336,49 +413,29 @@ export class KnowledgeService implements OnModuleInit {
       }
     }
 
-    // 加载可见叶子块（旧版单级块 embedding 非空且 parentId 为空 → 视为叶子，命中后返回自身）
-    const leaves = await this.prisma.knowledgeChunk.findMany({
-      where: {
-        embedding: { not: Prisma.DbNull },
-        document: { status: 'indexed', ...visibleDocFilter(user) },
-      },
-      include: { document: { select: { name: true } } },
-    })
-    if (leaves.length === 0) return []
+    // 语料索引按可见范围缓存复用：省去每次检索全量读回 content + Json 向量、
+    // 现场分词与现场归一化
+    const index = await this.getRetrievalIndex(user)
+    if (index.size === 0) return []
 
-    // 叶子文本 = 上下文前缀 + 正文（与索引侧拼接一致）
-    const leafTexts = leaves.map((c) =>
-      this.prefixedText(c.document.name, c.sectionPath, c.content),
-    )
-
-    // 稠密检索：余弦相似度，语义门控（> 阈值才进入候选，保持旧行为且可配置）
+    // 稠密检索：语义门控（> 阈值才进入候选，阈值可配）。向量已在构建期 L2 归一化，
+    // 此处比较退化为点积，结果与余弦一致
     const queryVector = await this.getEmbeddings().embedQuery(searchQuery)
-    const denseList = leaves
-      .map((c) => ({ id: c.id, score: cosineSimilarity(queryVector, c.embedding as number[]) }))
-      .filter((d) => d.score > minScore)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, coarseTopK)
+    const denseList = index.denseSearch(queryVector, minScore, coarseTopK)
 
     // 稀疏检索：本地 BM25（编号/专有名词类查询的召回补充，如 "ERR-4012"）
-    const bm25 = new BM25(leafTexts.map((t) => tokenize(t)))
-    const bm25Scores = bm25.score(tokenize(searchQuery))
-    const bm25List = leaves
-      .map((c, i) => ({ id: c.id, score: bm25Scores[i] }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, coarseTopK)
+    const bm25List = index.lexicalSearch(tokenize(searchQuery), coarseTopK)
 
     // RRF 融合（结果序融合，抗分数尺度差异）→ 粗排候选
     const fused = rrfFuse([denseList, bm25List])
     const candidates = fused.slice(0, coarseTopK)
     if (candidates.length === 0) return []
 
-    // 叶子 → 父块映射；同一父块的多个叶子只保留融合分最高者（Small-to-Big）
-    const leafById = new Map(leaves.map((l) => [l.id, l]))
+    // 叶子 → 父块映射；同一父块的多个叶子只保留融合分最高者（Small-to-Big）。
+    // 只有粗排候选的父块需要正文，按 id 精确取回，不随语料规模膨胀
     const parentIds = [
       ...new Set(
-        candidates
-          .map((c) => leafById.get(c.id)?.parentId)
-          .filter((id): id is string => Boolean(id)),
+        candidates.map((c) => index.leaf(c.id)?.parentId).filter((id): id is string => Boolean(id)),
       ),
     ]
     const parentRows = parentIds.length
@@ -390,19 +447,20 @@ export class KnowledgeService implements OnModuleInit {
           include: { document: { select: { name: true } } },
         })
       : []
-    const parentById = new Map(parentRows.map((p) => [p.id, p]))
+    const parentById = new Map<string, HitChunk>(parentRows.map((p) => [p.id, toHitChunk(p)]))
     const bm25RankById = new Map(bm25List.map((x, i) => [x.id, i + 1]))
 
     const deduped: {
-      leaf: ChunkWithDoc
-      parent: ChunkWithDoc
+      leaf: LeafInput
+      parent: HitChunk
       denseScore: number
       fusedScore: number
       bm25Rank?: number
     }[] = []
     const byParent = new Map<string, number>()
     for (const c of candidates) {
-      const leaf = leafById.get(c.id)!
+      const leaf = index.leaf(c.id)
+      if (!leaf) continue
       const parent = leaf.parentId ? (parentById.get(leaf.parentId) ?? leaf) : leaf
       const key = parent.id
       const idx = byParent.get(key)
@@ -424,11 +482,11 @@ export class KnowledgeService implements OnModuleInit {
     for (const d of deduped) d.denseScore = denseById.get(d.leaf.id) ?? 0
 
     // Reranker 精排（默认开；未配置/失败时回退 RRF 排序）
-    let ranked: { parent: ChunkWithDoc; score: number }[] = []
+    let ranked: { parent: HitChunk; score: number }[] = []
     let reranked = false
     if (useRerank && deduped.length > 1) {
       const docs = deduped.map((d) =>
-        this.prefixedText(d.parent.document.name, d.parent.sectionPath, d.parent.content),
+        this.prefixedText(d.parent.documentName, d.parent.sectionPath, d.parent.content),
       )
       const scores = await this.rerank(searchQuery, docs, finalTopK)
       if (scores) {
@@ -455,7 +513,7 @@ export class KnowledgeService implements OnModuleInit {
       content: h.parent.content,
       score: Math.round(h.score * 1000) / 1000,
       documentId: h.parent.documentId,
-      documentName: h.parent.document.name,
+      documentName: h.parent.documentName,
       sectionPath: h.parent.sectionPath ?? null,
     }))
   }

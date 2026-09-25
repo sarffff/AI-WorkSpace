@@ -89,6 +89,10 @@ AI-Workspace/
 - [x] **工单分类体系**：`account` / `hardware` / `network` / `software` / `process` / `other`
       以 `ticket-taxonomy.ts` 为服务端单一真相，同时驱动 DTO 校验、`create_ticket` 工具给
       模型的 enum 与看板分类分布，为后续自动派单提供路由依据
+- [x] **检索开销收敛**：语料索引按可见范围缓存（语料变更代数失效，TTL 兜底跨进程），
+      BM25 改倒排表，叶子向量在构建期 L2 归一化、检索时以点积替代余弦。
+      5000 块 × 1024 维基准下单次检索 136ms → 7ms（纯 CPU，未计省去的全量行读取），
+      top-20 排序与改造前一致。**稠密检索仍是线性扫描**，万级以上需引入真正的向量索引
 - [ ] Electron 打包发布：`electron-updater` 已在主进程接线（仅打包态检查更新），
       后端 API 地址支持 localStorage > `VITE_API_BASE_URL` > 默认值三级解析；
       仍缺更新源 (feed URL) 与签名产物，即「能打包」但「未可发布」
