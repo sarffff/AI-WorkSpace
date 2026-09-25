@@ -122,6 +122,31 @@ export class KnowledgeService implements OnModuleInit {
   // 注册后台处理函数：队列消费时执行完整索引流水线
   onModuleInit() {
     this.queue.registerHandler((documentId, buffer) => this.processDocument(documentId, buffer))
+    void this.recoverInterruptedIndexing().catch((err: unknown) => {
+      // 恢复只是收尾，失败不应阻塞启动
+      this.logger.error(`启动恢复失败: ${err instanceof Error ? err.message : String(err)}`)
+    })
+  }
+
+  // 上传的原始文件字节只在内存队列里暂存、从不落盘，进程重启后既取不回任务也续跑不了索引。
+  // 但这些文档在库里仍停在 processing，前端会无限轮询显示「处理中」，用户以为还在跑。
+  // 启动时把超过宽限期仍未完成的判定为中断，置 failed 让状态收敛到可操作终态（重新上传）。
+  // 宽限期同时兜住多实例部署：另一个实例正在索引的新文档不会被本机误杀。
+  private async recoverInterruptedIndexing() {
+    const graceMs = this.intEnv('RAG_INDEX_STALE_GRACE_MIN', 10) * 60_000
+    const stranded = await this.prisma.document.findMany({
+      where: { status: 'processing', createdAt: { lt: new Date(Date.now() - graceMs) } },
+      select: { id: true, name: true },
+    })
+    if (stranded.length === 0) return
+    await this.prisma.document.updateMany({
+      where: { id: { in: stranded.map((d) => d.id) } },
+      data: { status: 'failed' },
+    })
+    this.logger.warn(
+      `启动恢复：${stranded.length} 个文档索引因服务重启中断，已置为 failed（需重新上传）：` +
+        stranded.map((d) => d.name).join(', '),
+    )
   }
 
   // 懒加载 embedding 客户端（共享 EmbeddingsClient；未配置 API Key 时明确报错，
