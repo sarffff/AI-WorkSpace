@@ -489,7 +489,7 @@ export const ChatPage: React.FC = () => {
     return () => document.removeEventListener('mousedown', onClick)
   }, [pickerOpen])
 
-  const bufferRef = useRef({ id: '', content: '' })
+  const bufferRef = useRef({ id: '', sessionId: '', content: '' })
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const isNewSessionRef = useRef(false)
@@ -546,11 +546,15 @@ export const ChatPage: React.FC = () => {
       .catch(() => {})
   }, [currentChatId, dispatch])
 
+  // 冲刷的目标会话取自 buffer 自身，不读 currentChatId：handleSend 在发送那一刻定格的
+  // 闭包里，新会话的 currentChatId 仍是 null（setCurrentChat 之后本轮循环也取不到新值），
+  // 用它会把内容写到 messagesBySession[''] 上被 reducer 静默丢弃 —— 新会话的首条回答
+  // 因此卡在第一个分片，之后所有增量都落不到消息上。
   const flushBuffer = useCallback(() => {
-    const { id, content } = bufferRef.current
-    if (!id || !content) return
-    dispatch(updateMessageContent({ id, sessionId: currentChatId || '', content }))
-  }, [dispatch, currentChatId])
+    const { id, sessionId, content } = bufferRef.current
+    if (!id || !sessionId || !content) return
+    dispatch(updateMessageContent({ id, sessionId, content }))
+  }, [dispatch])
 
   // 满意度反馈：先乐观更新（点击即有反馈），接口失败则回滚到原值
   const handleVote = useCallback(
@@ -745,7 +749,7 @@ export const ChatPage: React.FC = () => {
           if (chunk.done) {
             stopFlushTimer()
             flushBuffer()
-            bufferRef.current = { id: '', content: '' }
+            bufferRef.current = { id: '', sessionId: '', content: '' }
             dispatch(setIsGenerating(false))
             assistantMsgId = ''
             break
@@ -763,7 +767,7 @@ export const ChatPage: React.FC = () => {
                 api.renameChat(sessionId, title).catch(() => {})
               }
               assistantMsgId = Date.now().toString()
-              bufferRef.current = { id: assistantMsgId, content: chunk.content }
+              bufferRef.current = { id: assistantMsgId, sessionId, content: chunk.content }
               dispatch(
                 addMessage({
                   id: assistantMsgId,
