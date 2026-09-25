@@ -100,7 +100,11 @@ AI-Workspace/
 - [ ] Electron 打包发布：`electron-updater` 已在主进程接线（仅打包态检查更新），
       后端 API 地址支持 localStorage > `VITE_API_BASE_URL` > 默认值三级解析；
       仍缺更新源 (feed URL) 与签名产物，即「能打包」但「未可发布」
-- [ ] 端到端测试 (E2E)
+- [x] **桌面端主链路冒烟 (E2E)**：Playwright 驱动 Electron，后端由同源 HTTP 替身托管
+      （`apps/desktop/e2e/mock-backend.ts`，SSE 帧序按真实服务端写法手工构造）。
+      覆盖 登录 → 提问 → 流式回答（工具轨迹 / 引用溯源）→ HITL 建单确认 → 工单落进工单页，
+      并含拒绝建单分支。`pnpm --filter @servicedesk/desktop test:e2e`
+      暂未进 CI：需要下载 Electron 二进制并在 Linux 上备显示服务
 
 ---
 

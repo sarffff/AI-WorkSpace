@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // e2e 跑在 Node 里（Playwright 驱动 Electron），但 page.evaluate 的回调体是浏览器代码，
+    // 需要 DOM 全局（localStorage 等）才能类型检查
+    "types": ["node"],
+    "lib": ["ES2022", "DOM"],
+    "noEmit": true
+  },
+  "include": ["e2e", "playwright.config.ts"]
+}
