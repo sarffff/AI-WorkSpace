@@ -11,6 +11,7 @@ import { AgentToolRegistry, CreateTicketTool } from './agent-tools'
 import { AgentPersonaService } from './agent-persona.service'
 import type { TicketDraft, TicketRef } from './agent-tools'
 import { enforceLoopBudget, estimateTokens, trimHistoryToBudget } from './context-budget'
+import { confirmWaitWindows, waitForConfirmRequest, type ConfirmOutcome } from './confirm-wait'
 import { isRatableMessage, normalizeFeedback } from './message-feedback'
 
 // ===== Agent 流式事件协议（SSE 透传给前端） =====
@@ -631,6 +632,39 @@ ${context}
 
   // ===== HITL 建单确认 =====
 
+  // 等用户拍板：本实例内存 resolver、草稿状态被别处改写（轮询）、超时三路竞速。
+  // 详见 confirm-wait.ts —— 只等内存 resolver 时，跨实例确认会让本侧生成器永久挂起，
+  // 连带冻住 SSE 连接与会话槽位。
+  private async awaitConfirm(
+    requestId: string,
+    localDecision: Promise<boolean>,
+  ): Promise<ConfirmOutcome> {
+    const { timeoutMs, pollMs } = confirmWaitWindows(
+      this.configService.get<string>('CONFIRM_WAIT_TIMEOUT_MS'),
+      this.configService.get<string>('CONFIRM_WAIT_POLL_MS'),
+    )
+    try {
+      return await waitForConfirmRequest(
+        {
+          readDraftStatus: async (id) => {
+            const row = await this.prisma.ticketDraft.findUnique({
+              where: { requestId: id },
+              select: { status: true },
+            })
+            return row?.status ?? null
+          },
+          timeoutMs,
+          pollMs,
+        },
+        requestId,
+        localDecision,
+      )
+    } finally {
+      // 无论走哪条路，本实例的 resolver 注册都不该留下（否则内存表随会话数无界增长）
+      this.pendingConfirms.delete(requestId)
+    }
+  }
+
   // 用户对建单请求做出决定（前端确认卡调用）；未知/已处理请求返回 false
   // 断连后异步确认：内存注册表未命中时回查持久化草稿（TicketDraft），
   // 按草稿 title/content/priority 补建工单并流转状态
@@ -935,16 +969,49 @@ ${context}
               update: { status: 'pending' },
             })
             yield { type: 'confirm_required', draft: pendingDraft }
-            const approved = await confirmDecision
+            // 有界等待：本实例 resolver / 草稿被别处改写 / 超时，三路竞速
+            const outcome = await this.awaitConfirm(pendingDraft.requestId, confirmDecision)
             this.logger.log(
               JSON.stringify({
+                reqId: trace.requestId,
                 chatId,
                 userId: owner.id,
                 requestId: pendingDraft.requestId,
                 event: 'ticket-confirm',
-                approved,
+                outcome,
               }),
             )
+            if (outcome === 'expired') {
+              // 用户没拍板（或压根没回）：草稿保持 pending，本轮体面收尾。
+              // 继续挂着冻结的是连接、会话槽位和整个界面；超时只是这轮没结论。
+              // 之后重新进入该会话时确认卡会被恢复，那时确认走 resolveConfirm 的
+              // 持久化分支，工单照样建得出来。
+              trace.toolCalls++
+              trace.steps.push({
+                kind: 'tool',
+                tool: fname,
+                status: 'done',
+                summary: '等待用户确认超时',
+                ms: Date.now() - toolStartedAt,
+                round: round + 1,
+              })
+              yield {
+                type: 'tool',
+                step: { tool: fname, status: 'done', summary: '等待用户确认超时' },
+              }
+              messages.push({
+                role: 'tool',
+                tool_call_id: call.id,
+                content: JSON.stringify({
+                  message:
+                    '用户尚未对该建单请求做出决定，本次等待已超时结束，工单未创建。' +
+                    '请告知用户确认卡仍在其会话中等待、可稍后点击确认或暂不创建，' +
+                    '不要重复调用 create_ticket。',
+                }),
+              })
+              continue
+            }
+            const approved = outcome === 'approved'
             if (!approved) {
               // 用户拒绝：不建单，草稿置 rejected，结构化结果回传模型（转述原因，勿重复建单）
               await this.prisma.ticketDraft
