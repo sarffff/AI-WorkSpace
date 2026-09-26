@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "eval:retrieval": "nest build && node dist/src/scripts/eval-retrieval.js",
     "eval:agent": "nest build && node dist/src/scripts/eval-agent.js",
-    "eval:collect": "nest build && node dist/src/scripts/eval-collect.js"
+    "eval:collect": "nest build && node dist/src/scripts/eval-collect.js",
+    "eval:record-corpus": "nest build && node dist/src/scripts/eval-record-corpus.js"
   },
   "dependencies": {
     "@langchain/openai": "^1.5.6",

@@ -19,8 +19,11 @@ import { UploadPayloadStore } from './upload-payload.store'
 import { chunkDocument, ChunkConfig } from './chunking'
 import { tokenize } from './bm25'
 import {
+  coarseRank,
+  fallbackRank,
   HitChunk,
   LeafInput,
+  rankCandidates,
   RetrievalIndex,
   RetrievalIndexCache,
   scopeKeyOf,
@@ -98,9 +101,6 @@ const TEXT_EXTS = new Set([
   'ini',
   'toml',
 ])
-
-// RRF 融合参数（k 越大，名次差异对分数影响越平缓）
-const RRF_K = 60
 
 @Injectable()
 export class KnowledgeService implements OnModuleInit {
@@ -487,25 +487,15 @@ export class KnowledgeService implements OnModuleInit {
     const index = await this.getRetrievalIndex(user)
     if (index.size === 0) return []
 
-    // 稠密检索：语义门控（> 阈值才进入候选，阈值可配）。向量已在构建期 L2 归一化，
-    // 此处比较退化为点积，结果与余弦一致
+    // 排序主体（稠密 + 稀疏 + RRF 融合 + 折叠到父块 + 回退门）全走 retrieval-index 的
+    // 纯函数，与离线评测同一实现。向量已在构建期 L2 归一化，比较退化为点积，结果与余弦一致
     const queryVector = await this.getEmbeddings().embedQuery(searchQuery)
-    const denseList = index.denseSearch(queryVector, minScore, coarseTopK)
+    const coarse = coarseRank(index, queryVector, tokenize(searchQuery), minScore, coarseTopK)
+    if (coarse.length === 0) return []
 
-    // 稀疏检索：本地 BM25（编号/专有名词类查询的召回补充，如 "ERR-4012"）
-    const bm25List = index.lexicalSearch(tokenize(searchQuery), coarseTopK)
-
-    // RRF 融合（结果序融合，抗分数尺度差异）→ 粗排候选
-    const fused = rrfFuse([denseList, bm25List])
-    const candidates = fused.slice(0, coarseTopK)
-    if (candidates.length === 0) return []
-
-    // 叶子 → 父块映射；同一父块的多个叶子只保留融合分最高者（Small-to-Big）。
     // 只有粗排候选的父块需要正文，按 id 精确取回，不随语料规模膨胀
     const parentIds = [
-      ...new Set(
-        candidates.map((c) => index.leaf(c.id)?.parentId).filter((id): id is string => Boolean(id)),
-      ),
+      ...new Set(coarse.map((c) => c.parentId).filter((id): id is string => Boolean(id))),
     ]
     const parentRows = parentIds.length
       ? await this.prisma.knowledgeChunk.findMany({
@@ -517,38 +507,7 @@ export class KnowledgeService implements OnModuleInit {
         })
       : []
     const parentById = new Map<string, HitChunk>(parentRows.map((p) => [p.id, toHitChunk(p)]))
-    const bm25RankById = new Map(bm25List.map((x, i) => [x.id, i + 1]))
-
-    const deduped: {
-      leaf: LeafInput
-      parent: HitChunk
-      denseScore: number
-      fusedScore: number
-      bm25Rank?: number
-    }[] = []
-    const byParent = new Map<string, number>()
-    for (const c of candidates) {
-      const leaf = index.leaf(c.id)
-      if (!leaf) continue
-      const parent = leaf.parentId ? (parentById.get(leaf.parentId) ?? leaf) : leaf
-      const key = parent.id
-      const idx = byParent.get(key)
-      if (idx === undefined) {
-        byParent.set(key, deduped.length)
-        deduped.push({
-          leaf,
-          parent,
-          denseScore: 0,
-          fusedScore: c.score,
-          bm25Rank: bm25RankById.get(leaf.id),
-        })
-      } else {
-        deduped[idx].fusedScore = Math.max(deduped[idx].fusedScore, c.score)
-      }
-    }
-    // 稠密分数（语义可比，0-1）用于展示与无 Rerank 时的排序
-    const denseById = new Map(denseList.map((d) => [d.id, d.score]))
-    for (const d of deduped) d.denseScore = denseById.get(d.leaf.id) ?? 0
+    const deduped = rankCandidates(index, parentById, coarse)
 
     // Reranker 精排（默认开；未配置/失败时回退 RRF 排序）
     let ranked: { parent: HitChunk; score: number }[] = []
@@ -570,12 +529,8 @@ export class KnowledgeService implements OnModuleInit {
       }
     }
     if (!reranked) {
-      // 回退门控：语义相关（稠密 > 阈值）或词法命中（BM25 靠前）才保留
-      ranked = deduped
-        .filter((d) => d.denseScore > minScore || (d.bm25Rank ?? Infinity) <= finalTopK)
-        .sort((a, b) => b.fusedScore - a.fusedScore)
-        .slice(0, finalTopK)
-        .map((x) => ({ parent: x.parent, score: x.denseScore || x.fusedScore }))
+      // 回退门控与离线评测共用 fallbackRank：语义相关或词法命中靠前才保留，按融合分取 Top-K
+      ranked = fallbackRank(deduped, { minScore, finalTopK })
     }
 
     return ranked.map((h) => ({
@@ -736,18 +691,4 @@ export class KnowledgeService implements OnModuleInit {
     }
     throw new BadRequestException(`不支持的文件类型: .${ext || 'unknown'}`)
   }
-}
-
-// RRF（Reciprocal Rank Fusion）：对多个按分数排序的榜单做结果序融合，抗不同分数尺度
-function rrfFuse(
-  lists: { id: string; score: number }[][],
-  k = RRF_K,
-): { id: string; score: number }[] {
-  const acc = new Map<string, number>()
-  for (const list of lists) {
-    list.forEach((item, i) => {
-      acc.set(item.id, (acc.get(item.id) ?? 0) + 1 / (k + i + 1))
-    })
-  }
-  return [...acc.entries()].map(([id, score]) => ({ id, score })).sort((a, b) => b.score - a.score)
 }

@@ -114,6 +114,10 @@ AI-Workspace/
       tool 结果），是 token 大头，而它只做「选哪个工具、填什么参数」。新增
       `LLM_DECISION_MODEL` / Setting `llmDecisionModel` 可单独指定，缺省仍与生成同模型
       —— 选错工具的代价直接落在用户头上，不该为省钱默认降级
+- [x] **检索排序离线回归进 CI**：排序主体抽成不依赖 Nest 与数据库的纯函数
+      （`coarseRank` / `rankCandidates` / `fallbackRank`），线上与评测共用同一实现；
+      固定语料 + 录制向量后，HitRate@K / MRR / 词法召回 / 正负例区分度在无 Key 无 DB
+      下随 `test:ci` 跑。它同时暴露了 `ragMinScore` 默认值挡不住无关查询的缺陷（见文末）
 - [x] **HITL 确认门有界等待**：只等内存 resolver 时，跨实例的确认会让本侧生成器永久挂起
       （冻住 SSE、会话槽位与界面）。改为本实例 resolver / 草稿状态轮询 / 超时三路竞速；
       超时不等于拒绝——草稿保持 pending，用户之后重新进入会话仍可确认建单
@@ -215,8 +219,28 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
 pnpm --filter @servicedesk/server eval:retrieval   # 检索命中率 / MRR（需真实 MySQL + 模型 Key）
 pnpm --filter @servicedesk/server eval:agent       # Agent 工具决策回归（无副作用入口）
 pnpm --filter @servicedesk/server eval:collect     # 把 👎 反馈连同当次工具轨迹导出为候选评测用例
+pnpm --filter @servicedesk/server eval:record-corpus  # 重录离线评测语料与查询向量
 pnpm --filter @servicedesk/desktop test:e2e        # Electron 主链路冒烟（同源 mock 后端，无需 Key）
 ```
 
 评测默认以 `default@example.com` 视角跑（管理员可见全部语料）；用
 `EVAL_USER_EMAIL=...` 切到某部门员工视角验证行级权限。
+
+### 离线排序回归（已在 CI 内）
+
+`eval:retrieval` / `eval:agent` 需要真实 MySQL 与模型 Key，CI 无密钥跑不了。
+`eval:record-corpus` 把一份固定语料的叶子向量与查询向量录成
+`scripts/eval-corpus-fixture.json`，之后 `src/scripts/retrieval-offline.spec.ts`
+在无数据库、无网络下重跑**与线上同一组**排序函数（`coarseRank` →
+`rankCandidates` → `fallbackRank`），校验 HitRate@K、MRR、词法召回与正负例区分度。
+它随 `pnpm test:ci` 一起跑，所以改动混合检索/融合排序不再没有门禁。
+
+换 embedding 模型后该用例会失败并要求重录 —— 向量不再同一空间时评测结果无意义，
+这是设计而非 bug。
+
+⚠️ **已知缺陷（离线回归暴露，尚未调参）**：负例的最高稠密分 0.415 已越过线上默认
+阈值 `ragMinScore = 0.25`，即语义门对完全无关的问题拦不住；生产上看到的"负例不误召回"
+其实是 reranker 的终筛（`> 0.01`）在兜。一旦 rerank 未配置或调用失败回退，
+就会把无关文档当知识库依据引用出来。实测正负例分数区间是 0.620–0.824 vs 0.360–0.415，
+把阈值定在 0.45–0.6 之间可在不伤这批正例的前提下挡住负例 —— 但阈值该用真实语料定，
+不在合成语料上改默认值。

@@ -122,6 +122,120 @@ export function scopeKeyOf(user: { id: string; role: string; department: string 
   return user.role === 'admin' ? 'admin' : `u:${user.id}:${user.department ?? '-'}`
 }
 
+// RRF 融合（结果序融合，抗分数尺度差异）：k 越大，名次差异对分数影响越平缓
+const RRF_K = 60
+
+function rrfFuse(lists: ScoredHit[][]): ScoredHit[] {
+  const acc = new Map<string, number>()
+  for (const list of lists) {
+    list.forEach((item, i) => {
+      acc.set(item.id, (acc.get(item.id) ?? 0) + 1 / (RRF_K + i + 1))
+    })
+  }
+  return [...acc.entries()].map(([id, score]) => ({ id, score })).sort((a, b) => b.score - a.score)
+}
+
+export interface CoarseHit {
+  leafId: string
+  /** 该叶子归属的父块；旧版单级块为 null（命中即返回自身） */
+  parentId: string | null
+  denseScore: number
+  fusedScore: number
+  bm25Rank?: number
+}
+
+// 粗排：稠密语义门控 + 稀疏 BM25 → RRF 融合 → 折叠到父块（Small-to-Big，同父多个叶子
+// 只留融合分最高者）。
+//
+// 抽成不依赖 Nest/数据库的纯函数，是为了让「线上跑的排序」和「离线评测跑的排序」
+// 是同一段代码。评测若另抄一份排序，它测的就只是那份抄本。
+export function coarseRank(
+  index: RetrievalIndex,
+  queryVector: number[],
+  queryTokens: string[],
+  minScore: number,
+  coarseTopK: number,
+): CoarseHit[] {
+  if (index.size === 0) return []
+
+  const denseList = index.denseSearch(queryVector, minScore, coarseTopK)
+  const bm25List = index.lexicalSearch(queryTokens, coarseTopK)
+  const candidates = rrfFuse([denseList, bm25List]).slice(0, coarseTopK)
+  if (candidates.length === 0) return []
+
+  const bm25RankById = new Map(bm25List.map((x, i) => [x.id, i + 1]))
+  const denseById = new Map(denseList.map((d) => [d.id, d.score]))
+
+  // 按融合分降序遍历，故每个父块首次出现的那条就是它融合分最高的叶子
+  const byParent = new Map<string, CoarseHit>()
+  for (const c of candidates) {
+    const leaf = index.leaf(c.id)
+    if (!leaf) continue
+    const key = leaf.parentId ?? leaf.id
+    const existing = byParent.get(key)
+    if (existing) {
+      existing.fusedScore = Math.max(existing.fusedScore, c.score)
+      continue
+    }
+    byParent.set(key, {
+      leafId: leaf.id,
+      parentId: leaf.parentId,
+      denseScore: denseById.get(leaf.id) ?? 0,
+      fusedScore: c.score,
+      bm25Rank: bm25RankById.get(leaf.id),
+    })
+  }
+  return [...byParent.values()]
+}
+
+// 折叠后的候选：带上父块正文（供 reranker 打分）与稠密分（供展示与回退排序）
+export interface RankedCandidate {
+  leaf: LeafInput
+  parent: HitChunk
+  denseScore: number
+  fusedScore: number
+  bm25Rank?: number
+}
+
+/**
+ * 把粗排结果映射到父块正文。
+ * parents 由调用方提供（线上按候选 id 精确查库；离线评测用 fixture 里的固定父块），
+ * 取不到父块时退回叶子本身 —— 与改造前一致，避免候选被整个丢掉。
+ *
+ * coarseRank 与父块查询之间有依赖（要先知道取哪些父块），所以拆成两步由调用方串起来，
+ * 而不是包成一个函数去内部回调查库 —— 那样纯函数就名存实亡了。
+ */
+export function rankCandidates(
+  index: RetrievalIndex,
+  parents: Map<string, HitChunk>,
+  coarse: CoarseHit[],
+): RankedCandidate[] {
+  return coarse.map((c) => {
+    const leaf = index.leaf(c.leafId) as LeafInput
+    const parent = c.parentId ? (parents.get(c.parentId) ?? leaf) : leaf
+    return {
+      leaf,
+      parent,
+      denseScore: c.denseScore,
+      fusedScore: c.fusedScore,
+      bm25Rank: c.bm25Rank,
+    }
+  })
+}
+
+// 无 Reranker 时的回退排序：语义相关（稠密过阈值）或词法命中靠前才保留，
+// 按融合分降序取 Top-K。分数展示优先用稠密分（0-1 语义可比），无稠密分才用融合分。
+export function fallbackRank(
+  candidates: RankedCandidate[],
+  params: { minScore: number; finalTopK: number },
+): { parent: HitChunk; score: number }[] {
+  return candidates
+    .filter((d) => d.denseScore > params.minScore || (d.bm25Rank ?? Infinity) <= params.finalTopK)
+    .sort((a, b) => b.fusedScore - a.fusedScore)
+    .slice(0, params.finalTopK)
+    .map((d) => ({ parent: d.parent, score: d.denseScore || d.fusedScore }))
+}
+
 export interface CacheEntry {
   index: RetrievalIndex
   generation: number
