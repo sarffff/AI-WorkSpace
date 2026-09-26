@@ -757,6 +757,19 @@ ${context}
       totalMs: 0,
     }
 
+    // 引用去重：同一父块被多轮检索（或一轮内并行多次 search_knowledge）命中时会重复
+    // push，前端引用面板列出重复条目、[n] 脚注编号与实际片段错位。
+    // 落库的 sources 与 SSE 的 sources 事件共用这一份，保证展示、持久化、看板计数同口径
+    const seenSources = new Set<string>()
+    const collectSources = (incoming: RagHit[] | undefined) => {
+      for (const hit of incoming ?? []) {
+        const key = sourceKey(hit)
+        if (seenSources.has(key)) continue
+        seenSources.add(key)
+        trace.sources.push(hit)
+      }
+    }
+
     // bind 保留外层 this（生成器无法用箭头函数捕获 this）
     const run = async function* (): AsyncGenerator<AgentStreamEvent> {
       // —— 阶段一：工具决策循环 ——
@@ -854,7 +867,7 @@ ${context}
               ms: toolMs,
               round: round + 1,
             })
-            if (r.sources?.length) trace.sources.push(...r.sources)
+            collectSources(r.sources)
             if (r.ticket) trace.ticket = r.ticket
             messages.push({
               role: 'tool',
@@ -1080,7 +1093,7 @@ ${context}
             ms: toolMs,
             round: round + 1,
           })
-          if (sources?.length) trace.sources.push(...sources)
+          collectSources(sources)
           if (ticket) trace.ticket = ticket
           messages.push({
             role: 'tool',
@@ -1490,4 +1503,11 @@ function isEmptySearch(result: unknown): boolean {
     result !== null &&
     typeof (result as { message?: unknown }).message === 'string'
   )
+}
+
+// 引用片段的身份键：文档 + 章节 + 正文前缀。
+// 刻意与 evalToolDecision 的「文档 + 章节」粒度不同 —— 那边判的是"该章节是否被命中"，
+// 粗粒度才是对的；这里要渲染片段列表并给 [n] 脚注编号，同一章节的不同父块必须各占一条。
+export function sourceKey(hit: RagHit): string {
+  return `${hit.documentId}|${hit.sectionPath ?? ''}|${hit.content.slice(0, 200)}`
 }
