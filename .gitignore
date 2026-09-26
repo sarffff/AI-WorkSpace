@@ -76,3 +76,6 @@ apps/desktop/release/
 # Playwright E2E 产物
 test-results/
 playwright-report/
+
+# 上传原文件暂存（索引续跑用），运行时生成
+apps/server/data/

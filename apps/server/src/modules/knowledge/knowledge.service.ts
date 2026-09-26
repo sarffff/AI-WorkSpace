@@ -15,6 +15,7 @@ import { SettingsService } from '@/modules/settings/settings.service'
 import { LlmClient } from '@/common/llm-client'
 import { EmbeddingsClient } from '@/common/embeddings'
 import { IndexingQueueService } from './indexing-queue.service'
+import { UploadPayloadStore } from './upload-payload.store'
 import { chunkDocument, ChunkConfig } from './chunking'
 import { tokenize } from './bm25'
 import {
@@ -117,6 +118,7 @@ export class KnowledgeService implements OnModuleInit {
     private embeddingsClient: EmbeddingsClient,
     private settingsService: SettingsService,
     private readonly queue: IndexingQueueService,
+    private readonly payloads: UploadPayloadStore,
   ) {}
 
   // 注册后台处理函数：队列消费时执行完整索引流水线
@@ -128,25 +130,57 @@ export class KnowledgeService implements OnModuleInit {
     })
   }
 
-  // 上传的原始文件字节只在内存队列里暂存、从不落盘，进程重启后既取不回任务也续跑不了索引。
-  // 但这些文档在库里仍停在 processing，前端会无限轮询显示「处理中」，用户以为还在跑。
-  // 启动时把超过宽限期仍未完成的判定为中断，置 failed 让状态收敛到可操作终态（重新上传）。
-  // 宽限期同时兜住多实例部署：另一个实例正在索引的新文档不会被本机误杀。
+  // 重启会丢掉内存队列：索引到一半的文档在库里仍停在 processing，前端无限轮询「处理中」。
+  // 原文件字节已落盘的 → 重新入队续跑（用户不用重传）；取不回的 → 收敛为 failed，
+  // 至少状态是诚实的、可操作的。
+  // 宽限期（默认 10 分钟）不只是保守：Document 没有 updatedAt，只能拿 createdAt 判新旧，
+  // 而多实例部署下另一实例正在索引的文档在库里同样是「创建很久的 processing」。
   private async recoverInterruptedIndexing() {
     const graceMs = this.intEnv('RAG_INDEX_STALE_GRACE_MIN', 10) * 60_000
     const stranded = await this.prisma.document.findMany({
       where: { status: 'processing', createdAt: { lt: new Date(Date.now() - graceMs) } },
       select: { id: true, name: true },
     })
-    if (stranded.length === 0) return
-    await this.prisma.document.updateMany({
-      where: { id: { in: stranded.map((d) => d.id) } },
-      data: { status: 'failed' },
-    })
-    this.logger.warn(
-      `启动恢复：${stranded.length} 个文档索引因服务重启中断，已置为 failed（需重新上传）：` +
-        stranded.map((d) => d.name).join(', '),
-    )
+    // 一次 read 定分档：取到字节 → 续跑；确认没有 → 判失败；读取出错 → 什么都别做
+    // （磁盘抖动不该把一个本可恢复的文档直接判死，保持 processing 下次重启再试）
+    const resumable: { id: string; name: string; buffer: Buffer }[] = []
+    const abandoned: typeof stranded = []
+    const unknown: typeof stranded = []
+    for (const doc of stranded) {
+      try {
+        const buffer = await this.payloads.read(doc.id)
+        if (buffer) resumable.push({ ...doc, buffer })
+        else abandoned.push(doc)
+      } catch (err) {
+        this.logger.warn(
+          `读取上传副本失败，本轮不处理 ${doc.name}: ` +
+            (err instanceof Error ? err.message : String(err)),
+        )
+        unknown.push(doc)
+      }
+    }
+
+    if (abandoned.length > 0) {
+      await this.prisma.document.updateMany({
+        where: { id: { in: abandoned.map((d) => d.id) } },
+        data: { status: 'failed' },
+      })
+      this.logger.warn(
+        `启动恢复：${abandoned.length} 个文档索引中断且原文件已不可得，置为 failed（需重新上传）：` +
+          abandoned.map((d) => d.name).join(', '),
+      )
+    }
+
+    // 逐个重排：队列本身单消费者顺序执行，这里只是把字节读回来排队
+    for (const doc of resumable) {
+      this.queue.enqueue(doc.id, doc.buffer)
+    }
+    if (resumable.length > 0) {
+      this.logger.log(
+        `启动恢复：${resumable.length} 个中断的索引任务已重新入队续跑` +
+          (unknown.length ? `，${unknown.length} 个待下次重试` : ''),
+      )
+    }
   }
 
   // 懒加载 embedding 客户端（共享 EmbeddingsClient；未配置 API Key 时明确报错，
@@ -253,6 +287,10 @@ export class KnowledgeService implements OnModuleInit {
       },
     })
 
+    // 先把原始字节落盘再入队：内存队列一重启就没了，落盘后才有「续跑」这回事。
+    // 写失败不阻断上传（本轮仍在内存里，能正常索引），只是这份文档失去重启续跑能力
+    await this.payloads.write(doc.id, file.buffer)
+
     this.queue.enqueue(doc.id, file.buffer)
 
     return {
@@ -337,6 +375,8 @@ export class KnowledgeService implements OnModuleInit {
       })
       // 新叶子上线：语料索引必须作废，否则刚上传的文档在 TTL 内检索不到
       this.invalidateRetrievalIndex()
+      // 已进终态：删掉原文件副本，否则磁盘只增不减
+      await this.payloads.remove(documentId)
       this.queue.update(documentId, { stage: 'done', percent: 100, chunks: parents.length })
       this.logger.log(`indexed "${doc.name}": ${parents.length} parents / ${leaves.length} leaves`)
     } catch (err: unknown) {
@@ -346,6 +386,8 @@ export class KnowledgeService implements OnModuleInit {
       await this.prisma.document
         .update({ where: { id: documentId }, data: { status: 'failed' } })
         .catch(() => {})
+      // 失败也是终态（用户可重新上传）：留着副本只会在下次启动把一个已判失败的文档再跑一遍
+      await this.payloads.remove(documentId)
       this.queue.update(documentId, { stage: 'failed', percent: 100, error: errorMessage })
       throw err
     }
@@ -360,6 +402,8 @@ export class KnowledgeService implements OnModuleInit {
     await this.prisma.document.delete({ where: { id } })
     // 级联删掉了该文档全部块：不清索引的话已删内容仍可能被检出并作为引用展示
     this.invalidateRetrievalIndex()
+    // 副本也要删：否则一个已删文档会在下次启动时被当作中断任务重新索引回来
+    await this.payloads.remove(id)
     return { success: true }
   }
 
