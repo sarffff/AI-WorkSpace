@@ -10,15 +10,26 @@ import {
   Header,
   UseGuards,
 } from '@nestjs/common'
+import { Throttle } from '@nestjs/throttler'
 import { Response } from 'express'
 import { ChatService, AgentStreamEvent } from './chat.service'
+import { StreamSlotService } from './stream-slot.service'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { UserId } from '../auth/user-id.decorator'
+
+// 一条 Agent 流最少值 5 次上游调用（决策循环 + 生成），按次数限流而不只是按并发：
+// 单用户在 STREAM_RATE_LIMIT/min 之内反复开流仍然会烧掉可观的模型配额
+const streamRateLimit = parseInt(process.env.STREAM_RATE_LIMIT_PER_MIN ?? '', 10)
+const STREAM_RATE_LIMIT =
+  Number.isFinite(streamRateLimit) && streamRateLimit > 0 ? streamRateLimit : 20
 
 @Controller('chats')
 @UseGuards(JwtAuthGuard)
 export class ChatController {
-  constructor(private readonly chatService: ChatService) {}
+  constructor(
+    private readonly chatService: ChatService,
+    private readonly slots: StreamSlotService,
+  ) {}
 
   // ===== 会话管理 =====
 
@@ -86,12 +97,25 @@ export class ChatController {
   // 流式对话（SSE），逐 token 推送
   @Post(':id/completions/stream')
   @Header('Cache-Control', 'no-cache')
+  @Throttle({ default: { limit: STREAM_RATE_LIMIT, ttl: 60_000 } })
   async streamCompletions(
     @UserId() userId: string,
     @Param('id') id: string,
     @Body() body: { prompt: string; model?: string; useRag?: boolean; systemPrompt?: string },
     @Res() res: Response,
   ) {
+    // 并发上限先行拦截，且必须在切到 SSE 之前：那样客户端拿到的才是真实 HTTP 429，
+    // 而不是混在流内 error 帧里的文本 —— 前端把后者当"回答出错"处理，用户看不到是被限流
+    if (!this.slots.tryAcquire(userId)) {
+      const max = this.slots.maxPerUser()
+      res.status(429).json({
+        statusCode: 429,
+        message: `已有 ${max} 条对话在进行中，请等当前回答结束后再试`,
+        maxConcurrentStreams: max,
+      })
+      return
+    }
+
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Connection', 'keep-alive')
     res.setHeader('X-Accel-Buffering', 'no')
@@ -137,6 +161,8 @@ export class ChatController {
       res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`)
     } finally {
       res.end()
+      // 正常结束、断连、抛错三条路径都经过这里，槽位不会泄漏
+      this.slots.release(userId)
     }
   }
 

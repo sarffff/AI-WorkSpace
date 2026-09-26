@@ -125,3 +125,60 @@ pnpm install
 ```bash
 pnpm dev
 ```
+
+---
+
+## 🔐 首次启动与管理员
+
+后端**不再**自动创建 `default@example.com / 123456` 的管理员账号 —— 那等于给企业系统
+常驻一个公开口令的管理员，而且每次重启都会把改过的密码重置回去。
+
+现在只在「用户表为空」时按环境变量引导一次：
+
+```bash
+BOOTSTRAP_ADMIN_PASSWORD='至少 8 位的强口令' pnpm --filter @servicedesk/server dev
+```
+
+| 变量                       | 说明                                                 |
+| :------------------------- | :--------------------------------------------------- |
+| `BOOTSTRAP_ADMIN_PASSWORD` | 必填才会创建；短于 8 位直接拒绝（不静默降级）        |
+| `BOOTSTRAP_ADMIN_EMAIL`    | 缺省 `default@example.com`（与评测脚本默认视角一致） |
+| `BOOTSTRAP_ADMIN_NAME`     | 显示名，缺省「系统管理员」                           |
+
+已有用户的库一律不改动。空库且未给口令时只写一条警告 —— 此时通过界面注册的第一个
+账号只是普通员工（`User.role` 默认 `employee`），进不了坐席与管理视图。
+
+`GET /health` 为无需鉴权的就绪探针（含 MySQL `SELECT 1` 探活，不可用返 503），供进程管理器与反向代理使用。
+
+## 🚦 限流与并发配额
+
+一次 Agent 对话会打出 1-4 次决策调用 + 1 次流式生成，并在服务端挂住一条 SSE
+（HITL 确认门更可以挂很久），因此两层约束：
+
+| 变量                              | 默认  | 作用                                         |
+| :-------------------------------- | :---- | :------------------------------------------- |
+| `THROTTLE_TTL_MS`                 | 60000 | 全局限流窗口                                 |
+| `THROTTLE_LIMIT`                  | 600   | 窗口内每用户请求数（客户端有轮询，不宜过紧） |
+| `STREAM_RATE_LIMIT_PER_MIN`       | 20    | 对话流端点单独收紧                           |
+| `MAX_CONCURRENT_STREAMS_PER_USER` | 2     | 每用户**在途**流上限，超出返回 HTTP 429      |
+
+限流按**用户**（JWT 的单向哈希）分桶而非 IP —— 办公室里所有人共用一个出口 IP，
+按 IP 限流会让同事之间互相拖累。计数是单进程内存态，多实例部署需换 Redis。
+
+`CORS_ORIGIN` 缺省放行所有来源，是桌面形态决定的：打包后渲染层以 `file://` 运行
+（Origin 为 `null`），收紧白名单会直接打断客户端。接入网页端时用逗号分隔白名单配置它。
+
+`NODE_ENV=production` 时若 `JWT_SECRET` 缺失或仍为开发兜底值 `dev-secret`，
+进程**拒绝启动**（该值可被用来自签任意用户含 admin 的 token）。
+
+## 🧪 评测与本地命令
+
+```bash
+pnpm --filter @servicedesk/server eval:retrieval   # 检索命中率 / MRR（需真实 MySQL + 模型 Key）
+pnpm --filter @servicedesk/server eval:agent       # Agent 工具决策回归（无副作用入口）
+pnpm --filter @servicedesk/server eval:collect     # 把 👎 反馈连同当次工具轨迹导出为候选评测用例
+pnpm --filter @servicedesk/desktop test:e2e        # Electron 主链路冒烟（同源 mock 后端，无需 Key）
+```
+
+评测默认以 `default@example.com` 视角跑（管理员可见全部语料）；用
+`EVAL_USER_EMAIL=...` 切到某部门员工视角验证行级权限。
