@@ -2,3 +2,6 @@ dist
 node_modules
 .turbo
 pnpm-lock.yaml
+
+# 生成物：机器录制的评测 fixture，不需要也不应该被格式化（展开会多出 3000+ 行）
+apps/server/scripts/eval-corpus-fixture.json
