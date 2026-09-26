@@ -33,9 +33,11 @@ const completion = (message: Record<string, unknown>, usage?: Record<string, num
 function make(opts: {
   decisions: Array<Record<string, unknown>>
   toolResult?: { result: unknown; summary: string; sources?: RagHit[] }
+  configGet?: (key: string) => string | undefined
 }) {
   const persisted: Record<string, unknown>[] = []
   const llmCalls: Record<string, unknown>[] = []
+  const chains: string[][] = []
 
   const prisma = {
     chat: {
@@ -64,9 +66,19 @@ function make(opts: {
 
   const decisions = [...opts.decisions]
   const llmClient = {
-    modelChain: (primary: string) => [primary],
-    complete: async (_client: unknown, _models: string[], input: Record<string, unknown>) => {
+    // 与真实 LlmClient.modelChain 同构：主模型 + env LLM_FALLBACK_MODELS（去重）
+    modelChain: (primary: string) => {
+      const chain = [primary]
+      const raw = opts.configGet?.('LLM_FALLBACK_MODELS') ?? ''
+      for (const m of raw.split(',')) {
+        const t = m.trim()
+        if (t && !chain.includes(t)) chain.push(t)
+      }
+      return chain
+    },
+    complete: async (_client: unknown, models: string[], input: Record<string, unknown>) => {
       llmCalls.push(input)
+      chains.push(models)
       const next = decisions.shift()
       if (!next) throw new Error('决策调用次数超出预期')
       return completion(next, { prompt_tokens: 10, completion_tokens: 5 })
@@ -92,7 +104,7 @@ function make(opts: {
 
   const service = new ChatService(
     prisma as unknown as PrismaService,
-    { get: () => undefined } as unknown as ConfigService,
+    { get: (key: string) => opts.configGet?.(key) } as unknown as ConfigService,
     llmClient as unknown as LlmClient,
     settingsService as unknown as SettingsService,
     knowledgeService as unknown as KnowledgeService,
@@ -102,7 +114,7 @@ function make(opts: {
     { createFromDraft: async () => ({ id: 't1', title: 'x' }) } as unknown as CreateTicketTool,
   )
 
-  return { service, persisted, llmCalls }
+  return { service, persisted, llmCalls, chains }
 }
 
 async function drain(stream: AsyncGenerator<AgentStreamEvent>) {
@@ -351,5 +363,47 @@ describe('ChatService 确认门超时收尾', () => {
     const toolMsg = messages.find((m) => m.role === 'tool')
     expect(String(toolMsg?.content)).toContain('尚未对该建单请求做出决定')
     expect(String(toolMsg?.content)).toContain('不要重复调用 create_ticket')
+  })
+})
+
+// 决策分档：多轮决策每轮都重发整个上下文，是 token 大头；但选错工具的代价直接落在
+// 用户头上，所以缺省必须与生成同模型，分档只能是显式配置。
+describe('决策模型分档', () => {
+  const direct = { decisions: [{ content: '直答' }] }
+
+  it('未配置决策模型时沿用生成模型链（默认不降级）', async () => {
+    const { service, chains } = make({ ...direct })
+    const { stream } = await service.startStream('c1', '你好', 'glm-strong')
+    await drain(stream)
+
+    expect(chains).toEqual([['glm-strong']])
+  })
+
+  it('配置后决策走自己的链，并保留备用模型降级', async () => {
+    const { service, chains } = make({
+      ...direct,
+      configGet: (key) =>
+        key === 'LLM_DECISION_MODEL'
+          ? 'glm-flash'
+          : key === 'LLM_FALLBACK_MODELS'
+            ? 'glm-strong, backup-x'
+            : undefined,
+    })
+    const { stream } = await service.startStream('c1', '你好', 'glm-strong')
+    await drain(stream)
+
+    // 决策链以指定模型打头，其后仍是 env 备用列表（含生成模型，故降级会回到强模型）
+    expect(chains[0]).toEqual(['glm-flash', 'glm-strong', 'backup-x'])
+  })
+
+  it('配置为空白时等价于未配置', async () => {
+    const { service, chains } = make({
+      ...direct,
+      configGet: (key) => (key === 'LLM_DECISION_MODEL' ? '   ' : undefined),
+    })
+    const { stream } = await service.startStream('c1', '你好', 'glm-strong')
+    await drain(stream)
+
+    expect(chains[0]).toEqual(['glm-strong'])
   })
 })

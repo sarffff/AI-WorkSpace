@@ -206,6 +206,20 @@ export class ChatService {
     return this.llmClient.modelChain(primary)
   }
 
+  // 决策轮可单独指定更便宜的模型：每轮决策都要重发整个上下文（人设 + 记忆 + 历史 +
+  // 已回填的 tool 结果），多轮下来是 token 的大头，而它做的只是「选哪个工具、填什么参数」。
+  //
+  // 缺省不指定时沿用生成模型 —— 这是刻意的：工具选错的代价（该建单没建、该检索没检索）
+  // 直接落到用户头上，不该为省钱默认降级。要用就显式配 LLM_DECISION_MODEL 或 Setting 表。
+  private async resolveDecisionChain(userId: string, generationChain: string[]): Promise<string[]> {
+    const primary =
+      (await this.settingsService.get(userId, 'llmDecisionModel')) ||
+      this.configService.get<string>('LLM_DECISION_MODEL')
+    if (!primary?.trim()) return generationChain
+    // 决策链自带降级：指定模型不可用时回落到 env 备用列表，而不是整轮失败
+    return this.llmClient.modelChain(primary.trim())
+  }
+
   // 环境变量整型读取（全局默认兜底；Setting 表可覆盖的参数不在此列）
   private envInt(key: string, def: number): number {
     const v = parseInt(this.configService.get<string>(key) ?? '', 10)
@@ -752,6 +766,7 @@ ${context}
     const owner = await this.getChatOwner(chatId)
     const openai = await this.getOpenAIClient(owner.id)
     const modelChain = await this.resolveModelChain(owner.id, model)
+    const decisionChain = await this.resolveDecisionChain(owner.id, modelChain)
     const history = await this.buildHistory(owner, chatId, prompt, openai, modelChain)
     const persona = await this.personas.active()
     await this.saveUserMessage(chatId, prompt)
@@ -815,11 +830,15 @@ ${context}
       for (let round = 0; round < maxRounds; round++) {
         // 统一走 LlmClient：超时/重试/备用模型降级（非流式）
         const decisionStartedAt = Date.now()
-        const { completion, model: usedModel } = await this.llmClient.complete(openai, modelChain, {
-          messages,
-          tools: this.toolRegistry.definitions(),
-          temperature: 0, // 工具决策调用：确定性优先，降低随机选错工具
-        })
+        const { completion, model: usedModel } = await this.llmClient.complete(
+          openai,
+          decisionChain,
+          {
+            messages,
+            tools: this.toolRegistry.definitions(),
+            temperature: 0, // 工具决策调用：确定性优先，降低随机选错工具
+          },
+        )
         decisionModel = usedModel
         // 分轮 token 记账：本轮 usage 单独记入 decision 步骤，同时合计进总量
         const roundPromptTokens =
@@ -1412,6 +1431,7 @@ ${context}
     if (!owner) throw new NotFoundException('用户不存在')
     const openai = await this.getOpenAIClient(userId)
     const modelChain = await this.resolveModelChain(userId)
+    const decisionChain = await this.resolveDecisionChain(userId, modelChain)
     // 取当前生效版本而不是内置常量：评测跑的不是线上那一版人设时，回归结论对不上实际行为。
     // 版本号随结果一起输出，eval 报告里能直接看出是哪一版的表现
     const persona = await this.personas.active()
@@ -1432,8 +1452,9 @@ ${context}
     let rounds = 0
 
     for (let round = 0; round < maxRounds; round++) {
-      // 统一走 LlmClient：超时/重试/备用模型降级（非流式，确定性优先）
-      const { completion } = await this.llmClient.complete(openai, modelChain, {
+      // 统一走 LlmClient：超时/重试/备用模型降级（非流式，确定性优先）。
+      // 与线上一致地用决策链：分档配了便宜模型时，评测必须测那一个，否则结论对不上
+      const { completion } = await this.llmClient.complete(openai, decisionChain, {
         messages,
         tools: this.toolRegistry.definitions(),
         temperature: 0, // 与线上工具决策调用一致：降低随机选错工具
