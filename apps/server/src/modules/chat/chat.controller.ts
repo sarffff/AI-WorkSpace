@@ -116,6 +116,17 @@ export class ChatController {
       return
     }
 
+    // 同一会话只允许一条在途流（两条会交错写消息、产出双份运行轨迹、各走一次确认门）。
+    // 归还顺序：会话占用失败时要先把刚拿到的用户槽放回去，否则一次 409 就永久吃掉一个名额
+    if (!this.slots.tryClaimChat(id, userId)) {
+      this.slots.release(userId)
+      res.status(409).json({
+        statusCode: 409,
+        message: '这个会话已有一条回答在进行中，请等它结束后再继续提问',
+      })
+      return
+    }
+
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Connection', 'keep-alive')
     res.setHeader('X-Accel-Buffering', 'no')
@@ -161,8 +172,9 @@ export class ChatController {
       res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`)
     } finally {
       res.end()
-      // 正常结束、断连、抛错三条路径都经过这里，槽位不会泄漏
+      // 正常结束、断连、抛错三条路径都经过这里，槽位与会话占用不会泄漏
       this.slots.release(userId)
+      this.slots.releaseChat(id)
     }
   }
 

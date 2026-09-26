@@ -49,4 +49,27 @@ export class StreamSlotService {
   activeCount(userId: string): number {
     return this.active.get(userId) ?? 0
   }
+
+  // ===== 同一会话互斥 =====
+  //
+  // 与「每用户并发数」是两回事：一个用户开两条不同的会话是正常的（受上面的并发上限管），
+  // 但对同一个 chatId 并发开流会交错写同一份消息、产出双份 AgentRun，甚至各自走到一次
+  // 确认门。状态码也刻意区分：409 = 这个会话正忙，429 = 你的配额用完了。
+
+  private readonly chatClaims = new Map<string, string>()
+
+  /** 占用会话；已被占用返回 false 且不改动持有者 */
+  tryClaimChat(chatId: string, userId: string): boolean {
+    if (this.chatClaims.has(chatId)) return false
+    this.chatClaims.set(chatId, userId)
+    return true
+  }
+
+  releaseChat(chatId: string): void {
+    this.chatClaims.delete(chatId)
+  }
+
+  chatHolder(chatId: string): string | undefined {
+    return this.chatClaims.get(chatId)
+  }
 }

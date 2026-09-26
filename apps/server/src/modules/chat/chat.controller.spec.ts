@@ -61,9 +61,11 @@ function deferred() {
 function makeController(opts: {
   streams: (chatId: string) => AsyncGenerator<unknown>
   onStartStream?: () => Promise<void>
+  streamMax?: string
 }) {
   const slots = new StreamSlotService({
-    get: (key: string) => (key === 'MAX_CONCURRENT_STREAMS_PER_USER' ? '1' : undefined),
+    get: (key: string) =>
+      key === 'MAX_CONCURRENT_STREAMS_PER_USER' ? (opts.streamMax ?? '1') : undefined,
   } as unknown as ConfigService)
 
   const chatService = {
@@ -166,6 +168,46 @@ describe('ChatController 流式端点的并发上限', () => {
     gate.resolve()
     await Promise.all([runningU1, runningU2])
     expect(slots.activeCount('u1')).toBe(0)
+    expect(slots.activeCount('u2')).toBe(0)
+  })
+
+  it('同一会话被占用时返回 409，且不消耗后来者的用户槽位', async () => {
+    const gate = deferred()
+    // 第三次调用要能正常跑完，所以只在前两次挂住
+    let block = true
+    const { controller, slots } = makeController({
+      streamMax: '2',
+      streams: () =>
+        block
+          ? (async function* () {
+              await gate.promise
+              yield { type: 'content', text: '答' } as never
+            })()
+          : oneChunkStream(),
+    })
+
+    const a = fakeRes()
+    const running = controller.streamCompletions('u1', 'c1', { prompt: 'q' }, a.res as never)
+    await new Promise((r) => setImmediate(r))
+
+    const b = fakeRes()
+    await controller.streamCompletions('u2', 'c1', { prompt: 'q' }, b.res as never)
+
+    expect(b.state.statusCode).toBe(409)
+    expect(b.state.headers['Content-Type']).toBeUndefined()
+    expect(b.state.written).toEqual([])
+    // 关键：被会话占用拒掉的请求不能顺手吃掉一个用户槽
+    expect(slots.activeCount('u2')).toBe(0)
+
+    gate.resolve()
+    await running
+    // 会话占用随流结束归还
+    expect(slots.chatHolder('c1')).toBeUndefined()
+
+    block = false
+    const c = fakeRes()
+    await controller.streamCompletions('u2', 'c1', { prompt: 'q' }, c.res as never)
+    expect(c.state.statusCode).toBe(200)
     expect(slots.activeCount('u2')).toBe(0)
   })
 })

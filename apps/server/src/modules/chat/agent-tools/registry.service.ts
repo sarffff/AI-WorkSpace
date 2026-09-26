@@ -8,9 +8,44 @@ import { AGENT_TOOLS, type AgentTool, type ToolContext, type ToolResult } from '
 // 集中承担原先散落在 execTool 里的边界处理：
 // - 参数 JSON 解析失败 → 按空参数走 schema 校验（缺必填即回传参数错误）
 // - 参数不合 schema → 结构化错误回传，模型下一轮自我修正
-// - 未知工具 / 执行抛异常 → 结构化错误回传，绝不让异常打断工具循环
+// - 未知工具 / 执行抛异常 / 等待超时 → 结构化错误回传，绝不让异常打断工具循环
 //
 // 工具实现只处理「干净参数 + 正常路径」。
+
+// 只读工具的等待上限（env TOOL_TIMEOUT_MS）：工具内部会打下游 —— search_knowledge
+// 含一次 rerank HTTP 调用，一旦上游挂住整条 SSE 就一直挂着，前端只能靠用户手动停止。
+// 超时不等于取消：底层 Promise 仍会跑完，只是不再等它 —— 对只读工具不过浪费一次查询。
+export const DEFAULT_TOOL_TIMEOUT_MS = 30_000
+
+export function toolTimeoutMs(raw?: string): number {
+  const v = parseInt(raw ?? process.env.TOOL_TIMEOUT_MS ?? '', 10)
+  return Number.isFinite(v) && v > 0 ? v : DEFAULT_TOOL_TIMEOUT_MS
+}
+
+class ToolTimeoutError extends Error {
+  constructor(
+    readonly toolName: string,
+    readonly ms: number,
+  ) {
+    super(`工具 ${toolName} 执行超过 ${ms}ms 未返回`)
+  }
+}
+
+function waitOrTimeout<T>(work: Promise<T>, ms: number, toolName: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new ToolTimeoutError(toolName, ms)), ms)
+    work.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (err: unknown) => {
+        clearTimeout(timer)
+        reject(err)
+      },
+    )
+  })
+}
 
 @Injectable()
 export class AgentToolRegistry {
@@ -72,9 +107,23 @@ export class AgentToolRegistry {
       return { result: { error: validated.error }, summary: '参数错误' }
     }
 
+    const timeoutMs = toolTimeoutMs()
     try {
-      return await tool.execute(validated.args, ctx)
+      // 写工具不设超时：半途放弃会造成状态不明 —— 工单其实已建成却告诉模型"失败"，
+      // 下一轮大概率重复建单。写路径本来就由 HITL 确认门设计成长阻塞。
+      const work = tool.execute(validated.args, ctx)
+      return tool.readOnly ? await waitOrTimeout(work, timeoutMs, name) : await work
     } catch (err) {
+      if (err instanceof ToolTimeoutError) {
+        this.logger.warn(`tool ${name} timed out after ${err.ms}ms`)
+        // 文案是写给模型看的：给出可执行的下一步，而不是只丢一个"超时"
+        return {
+          result: {
+            error: `工具 ${name} 执行超时（${err.ms}ms 未返回）。请换一个更具体的检索词重试一次，或基于已有信息直接回答，不要反复重试同一调用。`,
+          },
+          summary: '执行超时',
+        }
+      }
       const message = err instanceof Error ? err.message : '工具执行失败'
       this.logger.error(`tool ${name} failed: ${message}`)
       return { result: { error: message }, summary: `执行失败` }

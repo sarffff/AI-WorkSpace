@@ -64,3 +64,30 @@ describe('StreamSlotService', () => {
     }
   })
 })
+
+describe('StreamSlotService 同会话互斥', () => {
+  it('同一会话只能被一条流占用，释放后可再占', () => {
+    const slots = make()
+    expect(slots.tryClaimChat('c1', 'u1')).toBe(true)
+    expect(slots.tryClaimChat('c1', 'u2')).toBe(false)
+    expect(slots.chatHolder('c1')).toBe('u1')
+
+    slots.releaseChat('c1')
+    expect(slots.chatHolder('c1')).toBeUndefined()
+    expect(slots.tryClaimChat('c1', 'u2')).toBe(true)
+  })
+
+  it('占用失败不改动既有持有者', () => {
+    const slots = make()
+    slots.tryClaimChat('c1', 'u1')
+    slots.tryClaimChat('c1', 'u2')
+    expect(slots.chatHolder('c1')).toBe('u1')
+  })
+
+  it('不同会话互不影响；会话占用与用户并发计数各自独立', () => {
+    const slots = make('1')
+    expect(slots.tryClaimChat('c1', 'u1')).toBe(true)
+    expect(slots.tryClaimChat('c2', 'u1')).toBe(true)
+    expect(slots.activeCount('u1')).toBe(0)
+  })
+})
