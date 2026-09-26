@@ -18,7 +18,7 @@ const step = (tool: string, status = 'done') => ({ kind: 'tool', tool, status })
 const row = (over: Partial<FeedbackRow> = {}): FeedbackRow => ({
   query: '公司 VPN 连不上怎么办',
   feedbackReason: 'wrong',
-  run: { steps: [step('search_knowledge')], sources: 3, ticketId: null },
+  run: { steps: [step('search_knowledge')], sources: 3, ticketId: null, personaVersion: null },
   documentNames: ['VPN 排障手册'],
   ...over,
 })
@@ -64,13 +64,17 @@ describe('toCandidate', () => {
   })
 
   it('未调用工具时如实记录', () => {
-    const c = toCandidate(row({ run: { steps: [], sources: 0, ticketId: null } }))
+    const c = toCandidate(
+      row({ run: { steps: [], sources: 0, ticketId: null, personaVersion: null } }),
+    )
     expect(c.expectSearch).toBe(false)
     expect(c.note).toContain('实际行为：未调用工具')
   })
 
   it('ticketId 非空即算建单（HITL 确认后建单）', () => {
-    const c = toCandidate(row({ run: { steps: [], sources: 0, ticketId: 'TK-1' } }))
+    const c = toCandidate(
+      row({ run: { steps: [], sources: 0, ticketId: 'TK-1', personaVersion: null } }),
+    )
     expect(c.expectTicket).toBe(true)
   })
 
@@ -78,7 +82,9 @@ describe('toCandidate', () => {
     ['lookup_my_tickets', 'lookup_my_tickets'],
     ['get_ticket', 'get_ticket'],
   ])('%s 计入 expectTicketLookup', (_label, tool) => {
-    const c = toCandidate(row({ run: { steps: [step(tool)], sources: 0, ticketId: null } }))
+    const c = toCandidate(
+      row({ run: { steps: [step(tool)], sources: 0, ticketId: null, personaVersion: null } }),
+    )
     expect(c.expectTicketLookup).toBe(true)
   })
 
@@ -86,6 +92,24 @@ describe('toCandidate', () => {
     const c = toCandidate(row({ run: null }))
     expect(c.note).toContain('无轨迹')
     expect(c.expectSearch).toBe(false)
+  })
+
+  // 版本化的全部意义在这条断言上：负例若不带当时生效的提示词版本，
+  // 发布新版后就无法判断这条负例是否已被修掉
+  it('带版本号时写入 note，供发布新版后回看是否已修', () => {
+    const c = toCandidate(
+      row({
+        run: { steps: [step('search_knowledge')], sources: 3, ticketId: null, personaVersion: 7 },
+      }),
+    )
+    expect(c.note).toContain('提示词 v7')
+  })
+
+  it('版本为 0（回退内置副本）时不标注版本，避免读出「v0」这种无意义归因', () => {
+    const c = toCandidate(
+      row({ run: { steps: [], sources: 0, ticketId: null, personaVersion: 0 } }),
+    )
+    expect(c.note).not.toContain('提示词 v')
   })
 
   it('未选原因时标注「未选原因」', () => {

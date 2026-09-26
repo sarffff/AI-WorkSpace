@@ -101,6 +101,14 @@ AI-Workspace/
       该路径仍做 RAG 并落库，但不跑工具循环（不会自动升级工单）。此前它静默返回一段
       无出处、看起来与正常回答无异的答案；现在端点回传引用来源，答案上明确标注
       「降级回答 · 不会自动升级工单」，并纳入 E2E 覆盖
+- [x] **Agent 可靠性收口**：只读工具执行超时熔断（`TOOL_TIMEOUT_MS`，超时回传结构化错误
+      驱动反思轮；写工具刻意不设超时）；同一会话只允许一条在途流（409），与每用户并发
+      上限（429）分属两种语义
+- [x] **提示词版本化与归因链**：Agent 人设从代码常量迁入 `AgentPersona` 表（`active` 恰一条，
+      发布走事务、限管理员），`AgentRun` 记录 `personaVersion` 与 `requestId`，
+      `eval:collect` 导出的 👎 负例带上版本号 —— 补齐「负例收集 → 改提示词 → 回归验证」
+      缺的最后一段。管理入口 `GET|POST /agent-persona`
+- [x] **引用溯源去重**：同一父块被多轮检索命中不再重复计数，`[n]` 脚注与实际片段对齐
 - [ ] Electron 打包发布：`electron-updater` 已在主进程接线（仅打包态检查更新），
       后端 API 地址支持 localStorage > `VITE_API_BASE_URL` > 默认值三级解析；
       仍缺更新源 (feed URL) 与签名产物，即「能打包」但「未可发布」
@@ -150,17 +158,38 @@ BOOTSTRAP_ADMIN_PASSWORD='至少 8 位的强口令' pnpm --filter @servicedesk/s
 
 `GET /health` 为无需鉴权的就绪探针（含 MySQL `SELECT 1` 探活，不可用返 503），供进程管理器与反向代理使用。
 
+## 🧠 Agent 提示词版本
+
+Agent 人设（系统提示词）存在 `AgentPersona` 表里，恰有一条 `status=active`；
+首次启动自动播种 v1（内容取自内置副本 `agent-persona.ts`，读不到库时也会回退该副本，
+此时 `AgentRun.personaVersion` 记 0 以示区分）。
+
+```bash
+# 查看版本历史（含正文，供 diff）
+curl -H "Authorization: Bearer $TOKEN" localhost:4000/agent-persona
+
+# 发布新版本并置为生效（仅管理员；正文过短会被拒绝）
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"content":"...完整人设全文...","note":"修 👎 负例：过度澄清"}' \
+  localhost:4000/agent-persona
+```
+
+版本化的目的不是"能在线改提示词"，而是**回答可归因**：每条 `AgentRun` 记下当时生效的
+版本号，`eval:collect` 导出的 👎 负例也带着它。于是"改了提示词到底有没有修好这批负例"
+是个可回答的问题 —— 在此之前负例只能看到工具轨迹，看不到当时的行为规则是哪一版。
+
 ## 🚦 限流与并发配额
 
 一次 Agent 对话会打出 1-4 次决策调用 + 1 次流式生成，并在服务端挂住一条 SSE
 （HITL 确认门更可以挂很久），因此两层约束：
 
-| 变量                              | 默认  | 作用                                         |
-| :-------------------------------- | :---- | :------------------------------------------- |
-| `THROTTLE_TTL_MS`                 | 60000 | 全局限流窗口                                 |
-| `THROTTLE_LIMIT`                  | 600   | 窗口内每用户请求数（客户端有轮询，不宜过紧） |
-| `STREAM_RATE_LIMIT_PER_MIN`       | 20    | 对话流端点单独收紧                           |
-| `MAX_CONCURRENT_STREAMS_PER_USER` | 2     | 每用户**在途**流上限，超出返回 HTTP 429      |
+| 变量                              | 默认  | 作用                                                           |
+| :-------------------------------- | :---- | :------------------------------------------------------------- |
+| `THROTTLE_TTL_MS`                 | 60000 | 全局限流窗口                                                   |
+| `THROTTLE_LIMIT`                  | 600   | 窗口内每用户请求数（客户端有轮询，不宜过紧）                   |
+| `STREAM_RATE_LIMIT_PER_MIN`       | 20    | 对话流端点单独收紧                                             |
+| `MAX_CONCURRENT_STREAMS_PER_USER` | 2     | 每用户**在途**流上限，超出返回 HTTP 429                        |
+| `TOOL_TIMEOUT_MS`                 | 30000 | 只读工具等待上限，超时回传结构化错误驱动改道（写工具不设超时） |
 
 限流按**用户**（JWT 的单向哈希）分桶而非 IP —— 办公室里所有人共用一个出口 IP，
 按 IP 限流会让同事之间互相拖累。计数是单进程内存态，多实例部署需换 Redis。

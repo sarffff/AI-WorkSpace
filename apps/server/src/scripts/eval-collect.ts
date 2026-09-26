@@ -70,7 +70,13 @@ async function main() {
   // 关联轨迹：AgentRun.messageId → 该次运行的工具调用与建单结果
   const runs = await prisma.agentRun.findMany({
     where: { messageId: { in: downs.map((m) => m.id) } },
-    select: { messageId: true, steps: true, sources: true, ticketId: true },
+    select: {
+      messageId: true,
+      steps: true,
+      sources: true,
+      ticketId: true,
+      personaVersion: true,
+    },
   })
   const runByMessage = new Map(runs.map((r) => [r.messageId, r]))
 
@@ -91,7 +97,14 @@ async function main() {
     rows.push({
       query: question.content.trim(),
       feedbackReason: msg.feedbackReason,
-      run: run ? { steps: run.steps, sources: run.sources, ticketId: run.ticketId } : null,
+      run: run
+        ? {
+            steps: run.steps,
+            sources: run.sources,
+            ticketId: run.ticketId,
+            personaVersion: run.personaVersion,
+          }
+        : null,
       documentNames: documentNamesOf(msg.sources),
     })
   }

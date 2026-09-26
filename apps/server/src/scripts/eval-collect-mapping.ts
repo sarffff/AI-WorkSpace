@@ -23,6 +23,8 @@ export interface FeedbackRow {
     steps: unknown
     sources: number
     ticketId: string | null
+    /** 当时生效的提示词版本：负例若不带它，改了提示词也无从判断是否真的改好了 */
+    personaVersion: number | null
   } | null
   /** 该次回答的引用溯源文档名（来自 Message.sources） */
   documentNames: string[]
@@ -62,6 +64,8 @@ export function toCandidate(row: FeedbackRow): EvalCandidate {
     : '未选原因'
   const actual = tools.length > 0 ? tools.join(',') : '未调用工具'
   const traceNote = row.run ? '' : '；无轨迹（AGENT_TRACE 关闭或存量数据）'
+  // 版本号进 note：复核时才知道这条负例是不是已经被后来发布的版本修掉了
+  const versionNote = row.run?.personaVersion ? `；提示词 v${row.run.personaVersion}` : ''
 
   return {
     query: row.query,
@@ -70,7 +74,7 @@ export function toCandidate(row: FeedbackRow): EvalCandidate {
     expectTicket: ticketed,
     expectTicketLookup: looked,
     expectedDocs: row.documentNames,
-    note: `【待复核】用户不满：${reasonLabel}；实际行为：${actual}${traceNote}`,
+    note: `【待复核】用户不满：${reasonLabel}；实际行为：${actual}${traceNote}${versionNote}`,
   }
 }
 

@@ -145,6 +145,12 @@ model AgentRun {
   // 供 eval:collect 把👎反馈连同实际检索/建单行为一起导出为评测候选用例
   messageId        String?
   model            String? // 实际使用的最终模型（决策/生成降级后的最终值）
+  // 本次运行使用的提示词版本：与 messageId 一起构成
+  // 「被评价的回答 → 当次提示词版本 + 工具轨迹」的归因链
+  personaVersion   Int?
+  // 产生本次运行的 HTTP 请求标识（X-Request-Id）：一次提问跨多次 LLM 调用与
+  // 异步确认，靠它把散落的结构化日志与这条轨迹对上
+  requestId        String?
   status           String   @default("completed") // completed 完整 | partial 断连中断
   rounds           Int      @default(0) // 决策循环轮数
   toolCalls        Int      @default(0) // 工具调用总次数
@@ -161,6 +167,23 @@ model AgentRun {
   @@index([chatId, createdAt])
   @@index([userId, createdAt])
   @@index([messageId])
+  @@index([personaVersion])
+  @@index([requestId])
+}
+
+// Agent 人设提示词的版本历史：恰有一条 status=active。
+// 版本化的价值不在"能改提示词"（改代码也能），而在回答可归因 —— 没有版本号时，
+// 看板看到满意度下滑却无法回答"是这周那次提示词改动导致的吗"。
+model AgentPersona {
+  id        String   @id @default(uuid())
+  version   Int      @unique
+  content   String   @db.Text
+  note      String? // 变更说明：为什么出这一版（回归结论、修的哪类负例）
+  status    String   @default("archived") // active 生效中 | archived 历史
+  createdBy String? // 操作人（管理员）
+  createdAt DateTime @default(now())
+
+  @@index([status])
 }
 
 model Document {
