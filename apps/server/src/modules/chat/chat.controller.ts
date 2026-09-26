@@ -143,12 +143,18 @@ export class ChatController {
 
     try {
       await this.chatService.assertOwned(userId, id)
+      // reqId 由 LoggingInterceptor 写在响应头上，这里显式取出来传给运行层：
+      // 一次提问会打出多条日志（工具执行、确认、汇总）并落一条 AgentRun，
+      // 靠同一个 id 才能串起来。不用 AsyncLocalStorage —— Nest 的路由处理是冷
+      // Observable，在拦截器里 run() 的上下文不保证覆盖到实际执行时刻。
+      const requestId = String(res.getHeader('X-Request-Id') ?? '') || undefined
       const started = await this.chatService.startStream(
         id,
         body.prompt,
         body.model,
         body.useRag,
         body.systemPrompt,
+        requestId,
       )
       stream = started.stream
       // Agent 事件流：工具轨迹 / 确认请求 / 工单 / 引用溯源 均先于正文 token 推送

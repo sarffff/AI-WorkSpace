@@ -30,6 +30,8 @@ function fakeRes() {
     setHeader: (k: string, v: string) => {
       state.headers[k] = v
     },
+    // 控制器会把 LoggingInterceptor 写在响应头上的 X-Request-Id 传给运行层做归因
+    getHeader: (k: string) => (k === 'X-Request-Id' ? 'req-test' : undefined),
     on: () => undefined,
     write: (s: string) => {
       state.written.push(s)
