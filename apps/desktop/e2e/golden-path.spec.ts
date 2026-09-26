@@ -26,7 +26,15 @@ test.afterAll(async () => {
 
 test.beforeEach(async () => {
   backend.reset()
+})
 
+// 失败时也必须关掉进程：泄漏的 Electron 会占着窗口与 mock 闸门干扰后续用例
+test.afterEach(async () => {
+  await app?.close().catch(() => undefined)
+})
+
+// 启动放在用例内而不是 beforeEach：恢复场景需要"先把服务端置成有待决草稿，再启动客户端"
+async function boot() {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const electronBinary = require('electron') as string
   app = await electron.launch({
@@ -54,12 +62,7 @@ test.beforeEach(async () => {
   await win.locator('input[type="password"]').fill('e2e-password')
   await win.getByRole('button', { name: '登录工作台' }).click()
   await expect(win.locator('text=ServiceDeck 智能服务台助手')).toBeVisible()
-})
-
-// 失败时也必须关掉进程：泄漏的 Electron 会占着窗口与 mock 闸门干扰后续用例
-test.afterEach(async () => {
-  await app?.close().catch(() => undefined)
-})
+}
 
 async function ask() {
   await win.locator('textarea[placeholder="向智能助手发送指令..."]').fill(PROMPT)
@@ -70,6 +73,7 @@ async function ask() {
 }
 
 test('确认建单：草稿挂起等待用户拍板，通过后工单落进工单页', async () => {
+  await boot()
   await ask()
 
   const confirmButton = win.getByRole('button', { name: '确认创建', exact: true })
@@ -113,6 +117,7 @@ test('确认建单：草稿挂起等待用户拍板，通过后工单落进工�
 })
 
 test('拒绝建单：不产生工单，AI 继续对话', async () => {
+  await boot()
   await ask()
 
   await win.getByRole('button', { name: '暂不创建', exact: true }).click()
@@ -128,6 +133,7 @@ test('拒绝建单：不产生工单，AI 继续对话', async () => {
 })
 
 test('流式中断走非流式回退：仍给引用来源，并标注不会自动升级工单', async () => {
+  await boot()
   // 「触发中断」是替身的约定触发词：让流式端点返回 500，逼出客户端的 catch 回退分支
   await win
     .locator('textarea[placeholder="向智能助手发送指令..."]')
@@ -143,4 +149,26 @@ test('流式中断走非流式回退：仍给引用来源，并标注不会自�
 
   expect(backend.requestLog).toContain('POST /chats/chat-e2e-1/completions')
   expect(backend.tickets).toHaveLength(0)
+})
+
+test('断连后重新进入会话：未决的建单确认卡被恢复并可继续决策', async () => {
+  // 场景：Agent 推到确认门时 SSE 断了。草稿在服务端以 pending 落库，
+  // 用户重开客户端进到这个会话 —— 若界面不再显示这张卡，那个请求就永远悬着
+  backend.seedPendingDraft()
+  await boot()
+
+  // 侧边栏进入既有会话即触发恢复拉取
+  await win.getByText('我的 VPN 连不上...').click()
+  await expect
+    .poll(() => backend.requestLog.includes('GET /chats/chat-e2e-1/ticket-drafts'))
+    .toBe(true)
+
+  await expect(win.locator('text=确认创建工单 · 优先级 高 · 网络访问')).toBeVisible()
+
+  // 恢复出来的卡与实时卡行为一致：确认后走同一个 confirm-ticket 端点
+  await win.getByRole('button', { name: '确认创建', exact: true }).click()
+  await expect(win.locator('text=已确认创建')).toBeVisible()
+  expect(backend.confirmations).toEqual([
+    { requestId: expect.stringContaining('chat-e2e-1:'), approved: true },
+  ])
 })

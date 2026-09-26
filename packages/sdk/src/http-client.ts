@@ -337,6 +337,14 @@ export class HttpClient {
     return res.success
   }
 
+  /**
+   * 会话下待确认的建单草稿。SSE 断连/刷新后靠它恢复确认卡 —— 草稿在服务端
+   * 持久化为 pending，用户若不重新进入这个会话就永远不知道有个请求等他拍板。
+   */
+  async listPendingTicketDrafts(chatId: string): Promise<TicketDraft[]> {
+    return this.request<TicketDraft[]>(`/chats/${chatId}/ticket-drafts`)
+  }
+
   // 工单详情（含评论 + 系统事件时间线）
   async getTicketDetail(id: string): Promise<TicketDetail> {
     return this.request<TicketDetail>(`/tickets/${id}`)

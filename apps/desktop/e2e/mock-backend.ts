@@ -51,6 +51,7 @@ const USER = {
 const CHAT_ID = 'chat-e2e-1'
 const REQUEST_ID = `${CHAT_ID}:1700000000000:e2edraft`
 const PROMPT_TEXT = '我的 VPN 连不上，证书也重新装过了'
+const DRAFT_TITLE = 'VPN 账号疑似被锁定，需管理员解锁'
 
 const SOURCES = [
   {
@@ -99,7 +100,9 @@ export interface MockBackend {
   /** 诊断用：按序记录打到的 API 请求 */
   requestLog: string[]
   tickets: MockTicket[]
-  /** 清空记录与建单结果：用例之间互不污染 */
+  /** 造一个「断连后遗留的未决建单草稿」场景，用于验证恢复确认卡 */
+  seedPendingDraft: () => void
+  /** 用例之间清空记录与建单结果 */
   reset: () => void
   close: () => Promise<void>
 }
@@ -160,6 +163,8 @@ export async function startMockBackend(): Promise<MockBackend> {
   const emittedEvents: string[] = []
   const requestLog: string[] = []
   const tickets: MockTicket[] = []
+  // 断连后遗留的未决草稿（恢复场景用）；有草稿时会话才出现在列表里
+  let pendingDraft: Record<string, unknown> | null = null
   // 流跑完后才「落库」的回答，供 GET /messages 复现真实服务端的持久化时序
   let persistedAnswer: string | null = null
   // 建单确认闸门：SSE 生成器在此挂起，直到前端 POST /confirm-ticket
@@ -169,7 +174,7 @@ export async function startMockBackend(): Promise<MockBackend> {
     const now = new Date().toISOString()
     const ticket: MockTicket = {
       id: 'tk-e2e-1',
-      title: 'VPN 账号疑似被锁定，需管理员解锁',
+      title: DRAFT_TITLE,
       content: '员工反馈 VPN 连不上，知识库指引的证书排查无效，怀疑账号被锁定。',
       status: 'open',
       priority: 'high',
@@ -218,7 +223,7 @@ export async function startMockBackend(): Promise<MockBackend> {
     send({
       confirm: {
         requestId: REQUEST_ID.replace('chat-e2e-1', chatId),
-        title: 'VPN 账号疑似被锁定，需管理员解锁',
+        title: DRAFT_TITLE,
         content: '员工反馈 VPN 连不上，知识库指引的证书排查无效，怀疑账号被锁定。',
         priority: 'high',
         category: 'network',
@@ -262,7 +267,25 @@ export async function startMockBackend(): Promise<MockBackend> {
       return json(res, 200, USER)
     }
     if (method === 'GET' && path === '/chats') {
-      return json(res, 200, [])
+      return json(
+        res,
+        200,
+        pendingDraft
+          ? [
+              {
+                id: CHAT_ID,
+                title: '我的 VPN 连不上...',
+                pinned: false,
+                date: new Date().toISOString(),
+              },
+            ]
+          : [],
+      )
+    }
+    const draftsMatch = path.match(/^\/chats\/([^/]+)\/ticket-drafts$/)
+    if (method === 'GET' && draftsMatch) {
+      // 真实服务端按 chatId 过滤且只返回 pending：这里等价于「本会话有一条待决草稿」
+      return json(res, 200, pendingDraft && draftsMatch[1] === CHAT_ID ? [pendingDraft] : [])
     }
     if (method === 'POST' && path === '/chats') {
       return json(res, 201, {
@@ -285,7 +308,21 @@ export async function startMockBackend(): Promise<MockBackend> {
       // 流还没跑完就是「新会话，服务端尚无落库消息」。这里必须有返回空：
       // ChatPage 的历史加载 effect 会用 setMessages 整体覆盖本地消息，
       // 若在此返回任何预置内容都会把在途的流式回答冲掉。
-      if (!persistedAnswer) return json(res, 200, [])
+      if (!persistedAnswer) {
+        // 例外：有待决建单草稿的会话，必然是「问过一句然后断连」——那句提问已落库
+        if (pendingDraft && messagesMatch[1] === CHAT_ID) {
+          return json(res, 200, [
+            {
+              id: 'm-user',
+              chatId: CHAT_ID,
+              role: 'user',
+              content: PROMPT_TEXT,
+              createdAt: new Date(Date.now() - 60_000).toISOString(),
+            },
+          ])
+        }
+        return json(res, 200, [])
+      }
       return json(res, 200, [
         {
           id: 'm-user',
@@ -363,6 +400,16 @@ export async function startMockBackend(): Promise<MockBackend> {
       requestLog.length = 0
       tickets.length = 0
       persistedAnswer = null
+      pendingDraft = null
+    },
+    seedPendingDraft: () => {
+      pendingDraft = {
+        requestId: REQUEST_ID,
+        title: DRAFT_TITLE,
+        content: '上次断连前 Agent 提出的建单请求，尚未拍板。',
+        priority: 'high',
+        category: 'network',
+      }
     },
     close: () =>
       new Promise<void>((r) => {

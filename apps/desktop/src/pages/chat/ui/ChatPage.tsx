@@ -470,6 +470,31 @@ export const ChatPage: React.FC = () => {
     }
   }
 
+  // 断连或刷新后恢复未决的建单确认卡。
+  // Agent 推到确认门时草稿已按 status=pending 落库，服务端也支持在内存注册表未命中时
+  // 按草稿补建；但如果界面上不再把这张卡显示出来，用户就永远不知道有个请求等他拍板 ——
+  // 工单要么悬着，要么被他重复提问再建一张。
+  useEffect(() => {
+    // 切会话总是先清：确认卡属于某一个会话，不能跟着用户跳过去
+    setConfirmDraft(null)
+    if (!currentChatId) return
+    let cancelled = false
+    api
+      .listPendingTicketDrafts(currentChatId)
+      .then((drafts) => {
+        if (cancelled) return
+        // 只恢复最近一条：确认是逐个决策的交互，堆叠多张卡反而看不清该点哪个
+        const latest = drafts[0]
+        if (latest) setConfirmDraft({ ...latest, resolved: false })
+      })
+      .catch(() => {
+        // 拉不到就当没有：不该因为恢复失败而挡住正常提问
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [currentChatId])
+
   // 提示词选择器：打开时按需拉取列表
   useEffect(() => {
     if (!pickerOpen || promptList.length > 0) return
