@@ -4,6 +4,7 @@ import { confirmWaitWindows, waitForConfirmRequest, type ConfirmOutcome } from '
 // - 本实例 resolver 先出结果 → 直接采信（最快路径，不等轮询）
 // - 草稿被别处改成 approved/rejected → 轮询感知到即返回，交给调用方的原子抢占去防重
 // - 超时到期 → 'expired'（不是失败也不是拒绝：草稿保持 pending，之后可被恢复确认）
+// - 调用方 signal 取消（客户端断连）→ 同样按 'expired' 立刻收手，不等满超时窗口
 // - 无论哪条路退出，轮询与超时定时器都必须清掉（否则事件循环被拖住、句柄泄漏）
 
 const windows = { timeoutMs: 1000, pollMs: 30 }
@@ -70,6 +71,49 @@ describe('waitForConfirmRequest', () => {
       new Promise<boolean>(() => undefined),
     )
     expect(outcome).toBe<ConfirmOutcome>('expired')
+  })
+
+  it('调用方取消（客户端断连）→ 立刻按 expired 收，不等超时窗口', async () => {
+    let reads = 0
+    const ac = new AbortController()
+    const pending = waitForConfirmRequest(
+      {
+        readDraftStatus: async () => {
+          reads++
+          return 'pending'
+        },
+        timeoutMs: 60_000,
+        pollMs: 20,
+      },
+      'r1',
+      new Promise<boolean>(() => undefined),
+      ac.signal,
+    )
+    await new Promise((r) => setTimeout(r, 50))
+    const readsBefore = reads
+    ac.abort()
+
+    const startedAt = Date.now()
+    await expect(pending).resolves.toBe('expired')
+    expect(Date.now() - startedAt).toBeLessThan(200)
+
+    // 收手后轮询必须停：断连的一条流不该继续打库
+    await new Promise((r) => setTimeout(r, 80))
+    expect(reads).toBeGreaterThanOrEqual(readsBefore)
+    expect(reads).toBeLessThan(readsBefore + 5)
+  })
+
+  it('signal 进来时已经取消 → 直接就收', async () => {
+    const ac = new AbortController()
+    ac.abort()
+    await expect(
+      waitForConfirmRequest(
+        { readDraftStatus: async () => 'pending', timeoutMs: 60_000, pollMs: 20 },
+        'r1',
+        new Promise<boolean>(() => undefined),
+        ac.signal,
+      ),
+    ).resolves.toBe('expired')
   })
 
   it('读草稿抛错不致命：继续等，最终按超时收敛', async () => {

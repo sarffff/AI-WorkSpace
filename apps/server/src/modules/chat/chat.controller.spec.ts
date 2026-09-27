@@ -26,13 +26,16 @@ function fakeRes() {
     jsonBody: null,
     ended: false,
   }
+  const handlers: Record<string, Array<() => void>> = {}
   const res: Record<string, unknown> = {
     setHeader: (k: string, v: string) => {
       state.headers[k] = v
     },
     // 控制器会把 LoggingInterceptor 写在响应头上的 X-Request-Id 传给运行层做归因
     getHeader: (k: string) => (k === 'X-Request-Id' ? 'req-test' : undefined),
-    on: () => undefined,
+    on: (ev: string, fn: () => void) => {
+      ;(handlers[ev] ??= []).push(fn)
+    },
     write: (s: string) => {
       state.written.push(s)
       return true
@@ -49,7 +52,9 @@ function fakeRes() {
       return res
     },
   }
-  return { res, state }
+  // 触发 res 事件：'close' 即「客户端走了」
+  const fire = (ev: string) => handlers[ev]?.forEach((fn) => fn())
+  return { res, state, fire }
 }
 
 function deferred() {
@@ -61,7 +66,7 @@ function deferred() {
 }
 
 function makeController(opts: {
-  streams: (chatId: string) => AsyncGenerator<unknown>
+  streams: (chatId: string, signal?: AbortSignal) => AsyncGenerator<unknown>
   onStartStream?: () => Promise<void>
   streamMax?: string
 }) {
@@ -70,15 +75,25 @@ function makeController(opts: {
       key === 'MAX_CONCURRENT_STREAMS_PER_USER' ? (opts.streamMax ?? '1') : undefined,
   } as unknown as ConfigService)
 
+  /** 运行层收到的 opts（requestId / signal），按调用顺序 */
+  const streamOpts: Array<{ requestId?: string; signal?: AbortSignal }> = []
   const chatService = {
     assertOwned: async () => ({ id: 'c1' }),
-    startStream: async (chatId: string) => {
+    startStream: async (
+      chatId: string,
+      _prompt: string,
+      _model: string | undefined,
+      _useRag: boolean | undefined,
+      _systemPrompt: string | undefined,
+      o?: { requestId?: string; signal?: AbortSignal },
+    ) => {
+      streamOpts.push(o ?? {})
       await opts.onStartStream?.()
-      return { stream: opts.streams(chatId) }
+      return { stream: opts.streams(chatId, o?.signal) }
     },
   }
   const controller = new ChatController(chatService as unknown as ChatService, slots)
-  return { controller, slots }
+  return { controller, slots, streamOpts }
 }
 
 const oneChunkStream = (): AsyncGenerator<never> =>
@@ -211,5 +226,76 @@ describe('ChatController 流式端点的并发上限', () => {
     await controller.streamCompletions('u2', 'c1', { prompt: 'q' }, c.res as never)
     expect(c.state.statusCode).toBe(200)
     expect(slots.activeCount('u2')).toBe(0)
+  })
+})
+
+// 断连要真的把「别再花钱」传到运行层：return() 只让上层不再等，收不回已经发出去的
+// 请求；signal 才是掐请求的那一手。同时断连后不能再往已关闭的响应里写帧。
+describe('ChatController 断连取消', () => {
+  it('res close 时 abort 信号发出，生成器被回收，槽位归还', async () => {
+    const { controller, slots, streamOpts } = makeController({
+      streams: (_id, signal) =>
+        (async function* () {
+          yield { type: 'content', text: '半' } as never
+          // 模拟一次在途 LLM 调用：只有 signal 触发才会结束（真实实现里会抛错）
+          await new Promise<never>((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(new Error('llm cancelled')), {
+              once: true,
+            })
+          })
+        })(),
+    })
+
+    const r = fakeRes()
+    const running = controller.streamCompletions('u1', 'c1', { prompt: 'q' }, r.res as never)
+    await new Promise((res) => setImmediate(res))
+    expect(r.state.written.some((w) => w.includes('半'))).toBe(true)
+
+    r.fire('close')
+    await running
+
+    expect(streamOpts[0]?.signal?.aborted).toBe(true)
+    expect(r.state.ended).toBe(true)
+    expect(slots.activeCount('u1')).toBe(0)
+    expect(slots.chatHolder('c1')).toBeUndefined()
+    // 取消在生成器内部就是抛错：断连后 done 与 error 都不该再往已关闭的响应里写
+    expect(r.state.written.some((w) => w.includes('"done":true'))).toBe(false)
+    expect(r.state.written.some((w) => w.includes('"error"'))).toBe(false)
+  })
+
+  it('预检阶段就断连：生成器一次都不被驱动，也不写错误帧', async () => {
+    const gate = deferred()
+    let entered = false
+    const { controller, slots } = makeController({
+      // 预检（人设/历史/RAG）期间挂着：close 到来时流还没构造出来
+      onStartStream: async () => {
+        await gate.promise
+      },
+      streams: () =>
+        (async function* () {
+          entered = true
+          yield { type: 'content', text: 'X' } as never
+        })(),
+    })
+
+    const r = fakeRes()
+    const running = controller.streamCompletions('u1', 'c1', { prompt: 'q' }, r.res as never)
+    await new Promise((res) => setImmediate(res))
+    r.fire('close')
+    gate.resolve()
+    await running
+
+    expect(entered).toBe(false)
+    expect(r.state.written).toEqual([])
+    expect(r.state.ended).toBe(true)
+    expect(slots.activeCount('u1')).toBe(0)
+    expect(slots.chatHolder('c1')).toBeUndefined()
+  })
+
+  it('未断连时照常写 done', async () => {
+    const { controller } = makeController({ streams: () => oneChunkStream() })
+    const ok = fakeRes()
+    await controller.streamCompletions('u1', 'c1', { prompt: 'q' }, ok.res as never)
+    expect(ok.state.written.some((w) => w.includes('"done":true'))).toBe(true)
   })
 })

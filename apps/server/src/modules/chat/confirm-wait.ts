@@ -12,6 +12,10 @@ export type ConfirmOutcome = 'approved' | 'rejected' | 'expired'
 // 超时不是失败也不是拒绝 —— 草稿保持 pending，用户之后重新进入会话时确认卡会被
 // GET /ticket-drafts 恢复，那时点确认走 resolveConfirm 的持久化分支照样能建单。
 //
+// 第四个入口是调用方的取消信号（客户端断连）：生成器此刻正 await 在这里、没有中间
+// yield，queued 的 return() 要等它 settle 才生效 —— 不接信号的话，用户关了窗口后
+// 这条流还会占着会话槽位与轮询直到超时窗口跑完。按 'expired' 收，语义与超时同一路。
+//
 // 独立成纯函数模块（依赖注入读写），是为了能不带 Prisma/LLM 直接测这三条分支。
 
 export interface ConfirmWaitDeps {
@@ -25,9 +29,11 @@ export async function waitForConfirmRequest(
   deps: ConfirmWaitDeps,
   requestId: string,
   localDecision: Promise<boolean>,
+  signal?: AbortSignal,
 ): Promise<ConfirmOutcome> {
   let poll: NodeJS.Timeout | undefined
   let expiry: NodeJS.Timeout | undefined
+  let onGone: (() => void) | undefined
 
   // 轮询而不是订阅：本项目的共享状态层就是 MySQL，加发布订阅为这一个场景不值当
   const fromDraft = new Promise<ConfirmOutcome>((resolve) => {
@@ -45,15 +51,31 @@ export async function waitForConfirmRequest(
     expiry = setTimeout(() => resolve('expired'), deps.timeoutMs)
   })
 
+  const racers: Promise<ConfirmOutcome>[] = [
+    localDecision.then((approved) => (approved ? 'approved' : 'rejected')),
+    fromDraft,
+    timedOut,
+  ]
+  if (signal) {
+    // 断连与超时同归：本轮不建单，草稿留着
+    racers.push(
+      new Promise<ConfirmOutcome>((resolve) => {
+        if (signal.aborted) {
+          resolve('expired')
+          return
+        }
+        onGone = () => resolve('expired')
+        signal.addEventListener('abort', onGone, { once: true })
+      }),
+    )
+  }
+
   try {
-    return await Promise.race([
-      localDecision.then((approved) => (approved ? 'approved' : 'rejected')),
-      fromDraft,
-      timedOut,
-    ])
+    return await Promise.race(racers)
   } finally {
     if (poll) clearInterval(poll)
     if (expiry) clearTimeout(expiry)
+    if (signal && onGone) signal.removeEventListener('abort', onGone)
   }
 }
 

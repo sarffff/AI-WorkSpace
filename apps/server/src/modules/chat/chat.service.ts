@@ -6,7 +6,12 @@ import { KnowledgeService, RagHit } from '@/modules/knowledge/knowledge.service'
 import { MemoryService } from '@/modules/memory/memory.service'
 import OpenAI from 'openai'
 import type { Prisma } from '@prisma/client'
-import { LlmClient, LlmStreamResult, isInvalidRequestError } from '@/common/llm-client'
+import {
+  LlmAbortedError,
+  LlmClient,
+  LlmStreamResult,
+  isInvalidRequestError,
+} from '@/common/llm-client'
 import { AgentToolRegistry, CreateTicketTool } from './agent-tools'
 import { AgentPersonaService } from './agent-persona.service'
 import type { TicketDraft, TicketRef } from './agent-tools'
@@ -652,6 +657,7 @@ ${context}
   private async awaitConfirm(
     requestId: string,
     localDecision: Promise<boolean>,
+    signal?: AbortSignal,
   ): Promise<ConfirmOutcome> {
     const { timeoutMs, pollMs } = confirmWaitWindows(
       this.configService.get<string>('CONFIRM_WAIT_TIMEOUT_MS'),
@@ -672,6 +678,7 @@ ${context}
         },
         requestId,
         localDecision,
+        signal,
       )
     } finally {
       // 无论走哪条路，本实例的 resolver 注册都不该留下（否则内存表随会话数无界增长）
@@ -755,14 +762,19 @@ ${context}
 
   // 流式对话入口（Agent 模式）：
   // 工具循环（非流式，模型决定是否检索/建单）→ 轨迹与溯源事件 → 基于工具结果流式生成最终回答
+  //
+  // opts.signal 是客户端断连的取消信号。刻意不覆盖预检阶段（人设/记忆/历史/RAG）：
+  // 那段一旦抛错，用户消息就落不了库，这次提问在会话记录里会凭空消失。
+  // 断连在该阶段由 controller 的「补一次 return()」收尾，语义与这里一致。
   async startStream(
     chatId: string,
     prompt: string,
     model?: string,
     _useRag?: boolean, // 兼容旧参数：检索时机已由 Agent 自主决策
     systemPrompt?: string,
-    requestId?: string,
+    opts: { requestId?: string; signal?: AbortSignal } = {},
   ): Promise<{ stream: AsyncGenerator<AgentStreamEvent> }> {
+    const { requestId, signal } = opts
     const owner = await this.getChatOwner(chatId)
     const openai = await this.getOpenAIClient(owner.id)
     const modelChain = await this.resolveModelChain(owner.id, model)
@@ -822,12 +834,18 @@ ${context}
 
     // bind 保留外层 this（生成器无法用箭头函数捕获 this）
     const run = async function* (): AsyncGenerator<AgentStreamEvent> {
+      // 取消检查点：断连后不再发起下一轮决策、不再执行工具、不再开生成流。
+      // 这里抛错而不是 return —— return 会被 guarded 判成「正常收尾」，半成品回答就不存了
+      const throwIfCancelled = () => {
+        if (signal?.aborted) throw new LlmAbortedError()
+      }
       // —— 阶段一：工具决策循环 ——
       let directAnswer = ''
       let decisionModel = modelChain[0] // 决策循环实际使用的模型（可能已降级）
       // 收敛标记：模型不再调工具（给出直答）即为收敛；触顶退出时为 false → 告警
       let converged = false
       for (let round = 0; round < maxRounds; round++) {
+        throwIfCancelled()
         // 统一走 LlmClient：超时/重试/备用模型降级（非流式）
         const decisionStartedAt = Date.now()
         const { completion, model: usedModel } = await this.llmClient.complete(
@@ -837,6 +855,7 @@ ${context}
             messages,
             tools: this.toolRegistry.definitions(),
             temperature: 0, // 工具决策调用：确定性优先，降低随机选错工具
+            signal,
           },
         )
         decisionModel = usedModel
@@ -864,6 +883,9 @@ ${context}
           converged = true
           break
         }
+        // 已给出直答时不检查：那段正文值得留到下一个 yield 让 return() 收尾（guarded
+        // 会把它当半成品存下来）；而这里一旦继续就会执行工具，建单副作用没人可告知
+        throwIfCancelled()
 
         // 记录 assistant 的工具调用意图，随后执行并回填结果
         // roundStart：本轮 assistant(tool_calls) 的下标 —— 轮末预算收敛时该下标起的
@@ -988,8 +1010,10 @@ ${context}
               update: { status: 'pending' },
             })
             yield { type: 'confirm_required', draft: pendingDraft }
-            // 有界等待：本实例 resolver / 草稿被别处改写 / 超时，三路竞速
-            const outcome = await this.awaitConfirm(pendingDraft.requestId, confirmDecision)
+            // 有界等待：本实例 resolver / 草稿被别处改写 / 超时，三路竞速。
+            // 断连信号必须传进来：这一 await 期间没有任何 yield，queued 的 return()
+            // 要等它 settle 才生效，否则用户关了窗口这条流还占着会话槽位到超时
+            const outcome = await this.awaitConfirm(pendingDraft.requestId, confirmDecision, signal)
             this.logger.log(
               JSON.stringify({
                 reqId: trace.requestId,
@@ -1282,6 +1306,8 @@ ${context}
         // 基于工具结果流式生成最终回答（不再带工具，纯文本输出）
         // 统一走 LlmClient：重试只发生在流建立前，流建立后超时仅 abort 不重试；
         // stream_options 用于取精确 usage，兼容层不支持（4xx 参数错误）时去掉重试一次
+        // 断连时不该再花一次生成：阶段一的检索结果已经拿不到读者了
+        throwIfCancelled()
         const genStartedAt = Date.now()
         // 最终生成的独立 usage（分轮记账：与决策循环分开，总量仍合计）
         let genPromptTokens = 0
@@ -1291,11 +1317,12 @@ ${context}
           llmStream = await this.llmClient.stream(openai, modelChain, {
             messages,
             stream_options: { include_usage: true },
+            signal,
           })
         } catch (err) {
           if (!isInvalidRequestError(err)) throw err
           this.logger.warn(`stream_options 不被兼容层支持，token 用量回退估算: chat=${chatId}`)
-          llmStream = await this.llmClient.stream(openai, modelChain, { messages })
+          llmStream = await this.llmClient.stream(openai, modelChain, { messages, signal })
         }
         trace.model = llmStream.model
         for await (const chunk of llmStream.stream) {
@@ -1314,6 +1341,9 @@ ${context}
             yield { type: 'content', text }
           }
         }
+        // 取消不一定抛错：SDK 在 abort 时会把响应流关成「正常结束」。
+        // 不在此复查，截断的回答会被当完整回答落库、轨迹记成 completed
+        throwIfCancelled()
         // 降级路径（无 usage 块）：估算补齐
         if (trace.completionTokens === 0) {
           genCompletionTokens = estimateTokens(fullReply)

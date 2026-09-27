@@ -1,6 +1,6 @@
 import { Logger } from '@nestjs/common'
 import type { ConfigService } from '@nestjs/config'
-import type { LlmClient } from '@/common/llm-client'
+import { LlmAbortedError, type LlmClient } from '@/common/llm-client'
 import type { MemoryService } from '@/modules/memory/memory.service'
 import type { KnowledgeService } from '@/modules/knowledge/knowledge.service'
 import type { SettingsService } from '@/modules/settings/settings.service'
@@ -34,10 +34,20 @@ function make(opts: {
   decisions: Array<Record<string, unknown>>
   toolResult?: { result: unknown; summary: string; sources?: RagHit[] }
   configGet?: (key: string) => string | undefined
+  /** 决策响应到手之后触发：模拟「这一次调用刚回来，用户就走了」 */
+  afterDecision?: () => void
+  /** 工具执行期间触发：模拟用户在检索/建单途中关窗口 */
+  duringExecute?: () => void
+  /** 给出若干块则走流式生成分支 */
+  streamChunks?: string[]
+  /** 每产出一块后触发：可在生成途中制造一次断连 */
+  duringStream?: () => void
 }) {
   const persisted: Record<string, unknown>[] = []
   const llmCalls: Record<string, unknown>[] = []
   const chains: string[][] = []
+  const executed: string[] = []
+  const messageWrites: Record<string, unknown>[] = []
 
   const prisma = {
     chat: {
@@ -50,10 +60,10 @@ function make(opts: {
     },
     message: {
       findMany: async () => [],
-      create: async (args: { data: Record<string, unknown> }) => ({
-        id: 'm-new',
-        ...args.data,
-      }),
+      create: async (args: { data: Record<string, unknown> }) => {
+        messageWrites.push(args.data)
+        return { id: 'm-new', ...args.data }
+      },
     },
     agentRun: {
       create: async (args: { data: Record<string, unknown> }) => {
@@ -65,6 +75,10 @@ function make(opts: {
   }
 
   const decisions = [...opts.decisions]
+  // 与真实 LlmClient 一致：signal 已取消则一次请求都不发（真实实现里就是 LlmAbortedError）
+  const checkCancelled = (input: Record<string, unknown>) => {
+    if ((input.signal as AbortSignal | undefined)?.aborted) throw new LlmAbortedError()
+  }
   const llmClient = {
     // 与真实 LlmClient.modelChain 同构：主模型 + env LLM_FALLBACK_MODELS（去重）
     modelChain: (primary: string) => {
@@ -77,14 +91,31 @@ function make(opts: {
       return chain
     },
     complete: async (_client: unknown, models: string[], input: Record<string, unknown>) => {
+      checkCancelled(input)
       llmCalls.push(input)
       chains.push(models)
       const next = decisions.shift()
       if (!next) throw new Error('决策调用次数超出预期')
+      opts.afterDecision?.()
       return completion(next, { prompt_tokens: 10, completion_tokens: 5 })
     },
-    stream: async () => {
-      throw new Error('本用例走直答路径，不应进入流式生成')
+    stream: async (_client: unknown, _models: string[], input: Record<string, unknown>) => {
+      checkCancelled(input)
+      llmCalls.push(input)
+      const chunks = opts.streamChunks
+      if (!chunks) throw new Error('本用例走直答路径，不应进入流式生成')
+      const signal = input.signal as AbortSignal | undefined
+      return {
+        model: 'test-model',
+        // 与真实 SDK 一致：取消后不再产出块，并以「正常结束」收场（不抛错）
+        stream: (async function* () {
+          for (const text of chunks) {
+            if (signal?.aborted) return
+            yield { choices: [{ delta: { content: text } }] }
+            opts.duringStream?.()
+          }
+        })(),
+      }
     },
   }
 
@@ -95,8 +126,11 @@ function make(opts: {
   const registry = {
     definitions: () => [],
     isReadOnly: () => true,
-    execute: async () =>
-      opts.toolResult ?? { result: { message: '知识库中未检索到相关内容' }, summary: 's' },
+    execute: async (name: string) => {
+      executed.push(name)
+      opts.duringExecute?.()
+      return opts.toolResult ?? { result: { message: '知识库中未检索到相关内容' }, summary: 's' }
+    },
   }
   const personas = { active: async () => ({ version: 7, content: '生效人设全文' }) }
   const memoryService = { getUserMemory: async () => [], remember: async () => undefined }
@@ -114,7 +148,7 @@ function make(opts: {
     { createFromDraft: async () => ({ id: 't1', title: 'x' }) } as unknown as CreateTicketTool,
   )
 
-  return { service, persisted, llmCalls, chains }
+  return { service, persisted, llmCalls, chains, executed, messageWrites }
 }
 
 async function drain(stream: AsyncGenerator<AgentStreamEvent>) {
@@ -138,14 +172,9 @@ describe('ChatService.startStream 流接线', () => {
       decisions: [{ content: '你好，有什么可以帮你？' }],
     })
 
-    const { stream } = await service.startStream(
-      'c1',
-      '你好',
-      undefined,
-      undefined,
-      undefined,
-      'req-1',
-    )
+    const { stream } = await service.startStream('c1', '你好', undefined, undefined, undefined, {
+      requestId: 'req-1',
+    })
     const events = await drain(stream)
 
     expect(events).toEqual([{ type: 'content', text: '你好，有什么可以帮你？' }])
@@ -204,14 +233,9 @@ describe('ChatService.startStream 流接线', () => {
     const { service, persisted } = make({
       decisions: [{ content: '部分回答' }],
     })
-    const { stream } = await service.startStream(
-      'c1',
-      '你好',
-      undefined,
-      undefined,
-      undefined,
-      'req-2',
-    )
+    const { stream } = await service.startStream('c1', '你好', undefined, undefined, undefined, {
+      requestId: 'req-2',
+    })
     // 取走首帧即提前 return，模拟客户端断连触发 generator.return()
     const first = await stream.next()
     expect(first.value).toMatchObject({ type: 'content' })
@@ -225,9 +249,10 @@ describe('ChatService.startStream 流接线', () => {
   })
 })
 
-// 确认门超时：不能把这一路流无限挂住（挂住冻的是 SSE、会话槽位和整个界面），
+// 确认门没有结论时的两条收尾路径：超时、以及客户端断连。
+// 都不能把这一路流无限挂住（挂住冻的是 SSE、会话槽位和整个界面），
 // 也不能把草稿判成拒绝 —— 之后恢复出来的确认卡还要能把它建成。
-describe('ChatService 确认门超时收尾', () => {
+describe('ChatService 确认门收尾', () => {
   const TOOL_CALL = {
     type: 'function' as const,
     id: 'call-ticket',
@@ -237,7 +262,7 @@ describe('ChatService 确认门超时收尾', () => {
     },
   }
 
-  function makeConfirmCase() {
+  function makeConfirmCase(confirmTimeoutMs = 150) {
     const persisted: Record<string, unknown>[] = []
     const draftWrites: string[] = []
     const llmCalls: Array<Record<string, unknown>> = []
@@ -308,7 +333,7 @@ describe('ChatService 确认门超时收尾', () => {
     const config = {
       get: (key: string) =>
         key === 'CONFIRM_WAIT_TIMEOUT_MS'
-          ? '150'
+          ? String(confirmTimeoutMs)
           : key === 'CONFIRM_WAIT_POLL_MS'
             ? '30'
             : undefined,
@@ -363,6 +388,157 @@ describe('ChatService 确认门超时收尾', () => {
     const toolMsg = messages.find((m) => m.role === 'tool')
     expect(String(toolMsg?.content)).toContain('尚未对该建单请求做出决定')
     expect(String(toolMsg?.content)).toContain('不要重复调用 create_ticket')
+  })
+
+  it('等待中被客户端断连取消：立刻收手，不占着槽位等满超时窗口', async () => {
+    // 超时窗口放到 60s：只有取消真的传进了确认门，这个用例才不会挂死
+    const ac = new AbortController()
+    const { service, persisted, draftWrites, llmCalls, created } = makeConfirmCase(60_000)
+
+    const { stream } = await service.startStream(
+      'c1',
+      '帮我重置密码',
+      undefined,
+      undefined,
+      undefined,
+      { requestId: 'req-gone', signal: ac.signal },
+    )
+    const it = stream[Symbol.asyncIterator]()
+    expect(await it.next()).toMatchObject({ value: { type: 'tool' } })
+    expect(await it.next()).toMatchObject({ value: { type: 'confirm_required' } })
+
+    ac.abort()
+    const startedAt = Date.now()
+    const rest: AgentStreamEvent[] = []
+    let err: unknown = null
+    try {
+      for (;;) {
+        const r = await it.next()
+        if (r.done) break
+        rest.push(r.value as AgentStreamEvent)
+      }
+    } catch (e) {
+      err = e
+    }
+
+    expect(Date.now() - startedAt).toBeLessThan(2000)
+    expect(err).toBeInstanceOf(LlmAbortedError)
+    // 人都不在了，还去问第二轮模型 = 白付一次整个上下文的 token
+    expect(llmCalls).toHaveLength(1)
+    expect(created.count).toBe(0)
+    // 与超时同一路：草稿保持 pending，用户回来仍能确认建单
+    expect(draftWrites).toEqual(['upsert'])
+    expect(persisted.at(-1)).toMatchObject({ status: 'partial', requestId: 'req-gone' })
+  })
+})
+
+// 断连之后循环不该继续往下走：工具副作用没人可告知、下一轮决策白付 token。
+describe('ChatService 断连取消', () => {
+  const SEARCH = {
+    type: 'function' as const,
+    id: 'call-search',
+    function: { name: 'search_knowledge', arguments: '{"query":"vpn"}' },
+  }
+  const opts = (signal: AbortSignal) => ({ requestId: 'req-1', signal })
+
+  it('决策响应到手时用户已走：不执行工具', async () => {
+    const ac = new AbortController()
+    const { service, executed, persisted } = make({
+      decisions: [{ content: null, tool_calls: [SEARCH] }, { content: '不该走到这里' }],
+      afterDecision: () => ac.abort(),
+    })
+
+    const { stream } = await service.startStream(
+      'c1',
+      'vpn 怎么连',
+      undefined,
+      undefined,
+      undefined,
+      opts(ac.signal),
+    )
+    await expect(drain(stream)).rejects.toBeInstanceOf(LlmAbortedError)
+
+    expect(executed).toEqual([])
+    expect(persisted.at(-1)).toMatchObject({ status: 'partial' })
+  })
+
+  it('工具执行中断连：不再发起下一轮决策，也不开生成流', async () => {
+    const ac = new AbortController()
+    const { service, executed, llmCalls } = make({
+      decisions: [
+        { content: null, tool_calls: [SEARCH] },
+        { content: null }, // 若真走到这里就会进入流式生成
+      ],
+      toolResult: { result: [hit()], summary: '命中 1 片段' },
+      duringExecute: () => ac.abort(),
+    })
+
+    const { stream } = await service.startStream(
+      'c1',
+      'vpn 怎么连',
+      undefined,
+      undefined,
+      undefined,
+      opts(ac.signal),
+    )
+    await expect(drain(stream)).rejects.toBeInstanceOf(LlmAbortedError)
+
+    expect(executed).toEqual(['search_knowledge'])
+    expect(llmCalls).toHaveLength(1)
+  })
+
+  it('生成流被取消后即使「正常结束」，也不把截断的回答当完整回答落库', async () => {
+    // 真实 SDK 在 abort 时是把响应流关成正常结束，而不是抛错 —— 只依赖异常会漏判
+    const ac = new AbortController()
+    const { service, persisted, messageWrites } = make({
+      decisions: [
+        { content: null, tool_calls: [SEARCH] },
+        { content: null }, // 无正文 → 进入流式生成
+      ],
+      toolResult: { result: [hit()], summary: '命中 1 片段' },
+      streamChunks: ['前半句', '后半句', '不该出现的第三段'],
+      duringStream: () => ac.abort(), // 第一段之后就断连
+    })
+
+    const { stream } = await service.startStream(
+      'c1',
+      'vpn 怎么连',
+      undefined,
+      undefined,
+      undefined,
+      opts(ac.signal),
+    )
+    await expect(drain(stream)).rejects.toBeInstanceOf(LlmAbortedError)
+
+    const assistant = messageWrites.filter((m) => m.role === 'assistant')
+    expect(assistant).toHaveLength(1)
+    expect(String(assistant[0].content)).toBe('前半句\n\n_[已中断]_ ')
+    expect(persisted.at(-1)).toMatchObject({ status: 'partial' })
+  })
+
+  it('未取消时照常跑完：取消检查不会自己把流程掐了', async () => {
+    const ac = new AbortController()
+    const { service, executed, persisted } = make({
+      decisions: [{ content: null, tool_calls: [SEARCH] }, { content: '按知识库回答' }],
+      toolResult: { result: [hit()], summary: '命中 1 片段' },
+    })
+
+    const { stream } = await service.startStream(
+      'c1',
+      'vpn 怎么连',
+      undefined,
+      undefined,
+      undefined,
+      {
+        requestId: 'req-1',
+        signal: ac.signal,
+      },
+    )
+    const events = await drain(stream)
+
+    expect(executed).toEqual(['search_knowledge'])
+    expect(events.at(-1)).toMatchObject({ type: 'content', text: '按知识库回答' })
+    expect(persisted.at(-1)).toMatchObject({ status: 'completed', rounds: 2 })
   })
 })
 

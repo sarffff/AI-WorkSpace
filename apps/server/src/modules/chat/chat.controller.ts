@@ -135,11 +135,16 @@ export class ChatController {
     // 阶段一工具循环期间无事件输出，仅靠事件间检查会继续执行工具调用（含建单副作用）与 token 消耗
     let clientGone = false
     let stream: AsyncGenerator<AgentStreamEvent> | null = null
-    res.on('close', () => {
+    // 光靠 generator.return() 收不回已经发出去的 HTTP 请求：它只让上层「不再等」，
+    // 那一次调用仍会把「重试 × N + 备用模型 × M」跑完，token 照付。signal 才是掐请求的
+    const abort = new AbortController()
+    const cancel = () => {
       clientGone = true
-      // 立即向生成器注入 return：下一个 await 恢复点即终止，finally 保存半成品回答
+      abort.abort()
+      // 向生成器注入 return：下一个 await 恢复点即终止，finally 保存半成品回答
       void stream?.return(undefined as never).catch(() => {})
-    })
+    }
+    res.on('close', cancel)
 
     try {
       await this.chatService.assertOwned(userId, id)
@@ -154,9 +159,15 @@ export class ChatController {
         body.model,
         body.useRag,
         body.systemPrompt,
-        requestId,
+        {
+          requestId,
+          signal: abort.signal,
+        },
       )
       stream = started.stream
+      // 预检阶段（人设/历史/RAG）就断连的：close 事件到来时 stream 还没赋值，
+      // 那时只置了标记。补一次收尾，半成品与 partial 轨迹照常落库
+      if (clientGone) cancel()
       // Agent 事件流：工具轨迹 / 确认请求 / 工单 / 引用溯源 均先于正文 token 推送
       for await (const evt of stream) {
         if (clientGone) break
@@ -173,9 +184,11 @@ export class ChatController {
         }
       }
       stream = null
-      res.write(`data: ${JSON.stringify({ done: true })}\n\n`)
+      // 断连后 res 已关闭，再写会抛出异步 ERR_STREAM_WRITE_AFTER_END
+      if (!clientGone) res.write(`data: ${JSON.stringify({ done: true })}\n\n`)
     } catch (err) {
-      res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`)
+      // 断连后的抛错（取消信号掐掉请求即属此类）不再往已关闭的响应里写
+      if (!clientGone) res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`)
     } finally {
       res.end()
       // 正常结束、断连、抛错三条路径都经过这里，槽位与会话占用不会泄漏
