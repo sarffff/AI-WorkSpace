@@ -164,8 +164,9 @@ onApplicationShutdown`，放在后者里就已经晚了
       刻意没加的：`Chat(userId, updatedAt)`（侧边栏列表，单用户几十条，走现有索引 + filesort
       毫无压力，而 Chat 每个提问都被 touch 一次，加索引是纯写放大）和 `Chat(updatedAt)`
       （只有 SLA 看板的一次 count 用到，同理不值）。
-      ⚠️ 这些是静态分析 + 查询形状推导出来的，**没有 EXPLAIN 实测数据**（本机 DB 访问在
-      这次会话里被安全策略拦下）。迁移待跑：`pnpm --filter @servicedesk/server exec prisma migrate deploy`
+      ⚠️ 这些是静态分析 + 查询形状推导出来的，**没有 EXPLAIN 实测数据**。
+      两个迁移（`query_indexes`、`ticket_chat_link`）已于 2026-09-27 在本地库 `ai_workspace`
+      用 `prisma migrate deploy` 应用成功 —— 索引生效与否仍未实测，只是"库里确实有它们了"
 - [ ] 未做：`GET /tickets` 的坐席视角是 `where: {}` + 全量 include 评论，没有分页 ——
       索引只让它排序不那么贵，工单到几千条时它仍会先涨起来。加 LIMIT/游标会改到
       SDK 契约与前端列表行为，属于要先定的产品决策，没有顺手改
@@ -202,6 +203,15 @@ onApplicationShutdown`，放在后者里就已经晚了
       其实派错了，所以另算 `wouldSaveReassignment`，不把"猜中纠正结果"当成"猜中首派"。
       `minEvidence`（多少证据才敢放手）与 `maxLoad`（几个人手算饱和）走查询参数——那是运营要
       试的阈值，不是代码该定的。**没有接任何写库路径**：要不要真自动派单，等这两个端点的数字说话
+- [x] **一次命令把数字打出来：`pnpm metrics:report`**（只读；`METRICS_DAYS` /
+      `DISPATCH_MIN_EVIDENCE` / `DISPATCH_MAX_LOAD` 三个旋钮走环境变量）：前端还没接这两个端点，
+      脚本是它当前唯一的消费者，跑的是同一套 service 方法（不经 JWT，权限判定照过）。
+      **本地库实跑结论（2026-09-27）：两个问题都没有答案，因为没有样本** —— 4 个会话 / 26 条消息 /
+      2 张工单，且那 2 张全是 `other`、全是 `manual`、`source=agent` 为零。于是偏转率读出来是
+      100%，而脚本当场把它标成"空心"（分母里一次"没接住"都没有）；派单回测 evaluated 2 / decided 0，
+      天花板 100%（两张单都被同一个人接走）。结论行由门槛把关：已派过人的单不足 20 张就判
+      "任何命中率都是噪声"。所以下一件该做的事是让真实求助流进来（至少把那 2 张的分类改对），
+      而不是继续加算法
 - [ ] Electron 打包发布：`electron-updater` 已在主进程接线（仅打包态检查更新），
       后端 API 地址支持 localStorage > `VITE_API_BASE_URL` > 默认值三级解析；
       仍缺更新源 (feed URL) 与签名产物，即「能打包」但「未可发布」
