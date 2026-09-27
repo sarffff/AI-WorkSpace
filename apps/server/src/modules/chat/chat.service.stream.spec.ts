@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common'
+import { HttpException, Logger } from '@nestjs/common'
 import type { ConfigService } from '@nestjs/config'
 import { LlmAbortedError, type LlmClient } from '@/common/llm-client'
 import type { MemoryService } from '@/modules/memory/memory.service'
@@ -42,12 +42,15 @@ function make(opts: {
   streamChunks?: string[]
   /** 每产出一块后触发：可在生成途中制造一次断连 */
   duringStream?: () => void
+  /** message.aggregate 的返回（今日已用 token） */
+  tokenSum?: { _sum: { promptTokens: number | null; completionTokens: number | null } }
 }) {
   const persisted: Record<string, unknown>[] = []
   const llmCalls: Record<string, unknown>[] = []
   const chains: string[][] = []
   const executed: string[] = []
   const messageWrites: Record<string, unknown>[] = []
+  const aggregateCalls: Record<string, unknown>[] = []
 
   const prisma = {
     chat: {
@@ -63,6 +66,10 @@ function make(opts: {
       create: async (args: { data: Record<string, unknown> }) => {
         messageWrites.push(args.data)
         return { id: 'm-new', ...args.data }
+      },
+      aggregate: async (args: Record<string, unknown>) => {
+        aggregateCalls.push(args)
+        return opts.tokenSum ?? { _sum: { promptTokens: 0, completionTokens: 0 } }
       },
     },
     agentRun: {
@@ -148,7 +155,7 @@ function make(opts: {
     { createFromDraft: async () => ({ id: 't1', title: 'x' }) } as unknown as CreateTicketTool,
   )
 
-  return { service, persisted, llmCalls, chains, executed, messageWrites }
+  return { service, persisted, llmCalls, chains, executed, messageWrites, aggregateCalls }
 }
 
 async function drain(stream: AsyncGenerator<AgentStreamEvent>) {
@@ -581,5 +588,59 @@ describe('决策模型分档', () => {
     await drain(stream)
 
     expect(chains[0]).toEqual(['glm-strong'])
+  })
+})
+
+// 用量闸门：限流管频率，管不住「一次提问烧多少」。一路 Agent 是 1-4 次决策 + 1 次生成，
+// 跑飞的循环几分钟就能把上游配额吃穿 —— 那笔钱按 token 计。
+describe('每用户每日 token 预算', () => {
+  const budgetConfig = (budget: string) => ({
+    configGet: (key: string) => (key === 'USER_DAILY_TOKEN_BUDGET' ? budget : undefined),
+  })
+
+  it('未配置预算时不发聚合查询（关掉功能不该给每次提问加一次 DB 往返）', async () => {
+    const { service, aggregateCalls } = make({ decisions: [{ content: '直答' }] })
+
+    await expect(service.assertTokenBudget('u1')).resolves.toBeUndefined()
+    expect(aggregateCalls).toHaveLength(0)
+
+    const state = await service.budgetStatus('u1')
+    expect(state.budgetTokens).toBe(0)
+    expect(aggregateCalls).toHaveLength(0)
+  })
+
+  it('未超预算放行，用量口径为 prompt + completion', async () => {
+    const { service, aggregateCalls } = make({
+      decisions: [{ content: '直答' }],
+      ...budgetConfig('10000'),
+      tokenSum: { _sum: { promptTokens: 4000, completionTokens: 1500 } },
+    })
+
+    await expect(service.assertTokenBudget('u1')).resolves.toBeUndefined()
+    const state = await service.budgetStatus('u1')
+    expect(state.usedTokens).toBe(5500)
+    // 只算自己会话里的 assistant 消息，且窗口从今天 00:00 起
+    expect(aggregateCalls[0]?.where).toMatchObject({ role: 'assistant', chat: { userId: 'u1' } })
+    expect(
+      (aggregateCalls[0]?.where as { createdAt: { gte: Date } }).createdAt.gte.getHours(),
+    ).toBe(0)
+  })
+
+  it('用满预算即拒：429 + 可读原因 + 重置时间', async () => {
+    const { service } = make({
+      decisions: [{ content: '直答' }],
+      ...budgetConfig('10000'),
+      tokenSum: { _sum: { promptTokens: 9000, completionTokens: 2000 } },
+    })
+
+    const err = await service.assertTokenBudget('u1').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(HttpException)
+    const body = (err as HttpException).getResponse() as Record<string, unknown>
+    expect((err as HttpException).getStatus()).toBe(429)
+    expect(body.reason).toBe('token_budget')
+    expect(body.usedTokens).toBe(11000)
+    expect(body.budgetTokens).toBe(10000)
+    expect(String(body.message)).toContain('10000')
+    expect(String(body.resetsAt)).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)
   })
 })

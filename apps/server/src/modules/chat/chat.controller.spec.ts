@@ -1,4 +1,5 @@
 import type { ConfigService } from '@nestjs/config'
+import { HttpException } from '@nestjs/common'
 import type { ChatService } from './chat.service'
 import { StreamSlotService } from './stream-slot.service'
 import { ChatController } from './chat.controller'
@@ -68,6 +69,8 @@ function deferred() {
 function makeController(opts: {
   streams: (chatId: string, signal?: AbortSignal) => AsyncGenerator<unknown>
   onStartStream?: () => Promise<void>
+  /** 抛错即「今日 token 预算已用尽」 */
+  onBudget?: () => Promise<void>
   streamMax?: string
 }) {
   const slots = new StreamSlotService({
@@ -79,6 +82,9 @@ function makeController(opts: {
   const streamOpts: Array<{ requestId?: string; signal?: AbortSignal }> = []
   const chatService = {
     assertOwned: async () => ({ id: 'c1' }),
+    assertTokenBudget: async () => {
+      await opts.onBudget?.()
+    },
     startStream: async (
       chatId: string,
       _prompt: string,
@@ -226,6 +232,33 @@ describe('ChatController 流式端点的并发上限', () => {
     await controller.streamCompletions('u2', 'c1', { prompt: 'q' }, c.res as never)
     expect(c.state.statusCode).toBe(200)
     expect(slots.activeCount('u2')).toBe(0)
+  })
+
+  it('今日 token 预算用尽：真实 429，不切 SSE、不占任何槽位', async () => {
+    const { controller, slots } = makeController({
+      streams: () => oneChunkStream(),
+      onBudget: async () => {
+        throw new HttpException(
+          {
+            statusCode: 429,
+            message: '今天的模型用量已达预算上限 10000 tokens，00:00 后自动重置',
+            reason: 'token_budget',
+          },
+          429,
+        )
+      },
+    })
+
+    const r = fakeRes()
+    await expect(
+      controller.streamCompletions('u1', 'c1', { prompt: 'q' }, r.res as never),
+    ).rejects.toBeInstanceOf(HttpException)
+
+    expect(r.state.headers['Content-Type']).toBeUndefined()
+    expect(r.state.written).toEqual([])
+    // 闸门在占槽之前：被拒的请求不该消耗并发额度，也不该留下会话占用
+    expect(slots.activeCount('u1')).toBe(0)
+    expect(slots.chatHolder('c1')).toBeUndefined()
   })
 })
 

@@ -1,4 +1,10 @@
-import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common'
+import {
+  BadRequestException,
+  HttpException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { PrismaService } from '@/prisma/prisma.service'
 import { SettingsService } from '@/modules/settings/settings.service'
@@ -17,6 +23,13 @@ import { AgentPersonaService } from './agent-persona.service'
 import type { TicketDraft, TicketRef } from './agent-tools'
 import { enforceLoopBudget, estimateTokens, trimHistoryToBudget } from './context-budget'
 import { confirmWaitWindows, waitForConfirmRequest, type ConfirmOutcome } from './confirm-wait'
+import {
+  budgetLimit,
+  budgetMessage,
+  dayWindow,
+  isOverBudget,
+  type BudgetState,
+} from './token-budget'
 import { isRatableMessage, normalizeFeedback } from './message-feedback'
 
 // ===== Agent 流式事件协议（SSE 透传给前端） =====
@@ -196,6 +209,45 @@ export class ChatService {
     const chat = await this.prisma.chat.findUnique({ where: { id: chatId } })
     if (!chat || chat.userId !== userId) throw new NotFoundException('会话不存在')
     return chat
+  }
+
+  // ===== 用量闸门 =====
+
+  /**
+   * 今日（服务器本地自然日）该用户的 token 用量与预算。
+   * 预算为 0（缺省）时连聚合查询都不发：功能关掉就不该给每次提问加一次 DB 往返。
+   */
+  async budgetStatus(userId: string, now = new Date()): Promise<BudgetState> {
+    const budgetTokens = budgetLimit(this.configService.get<string>('USER_DAILY_TOKEN_BUDGET'))
+    const { start, resetsAt } = dayWindow(now)
+    if (!budgetTokens) return { budgetTokens: 0, usedTokens: 0, windowStart: start, resetsAt }
+
+    const sums = await this.prisma.message.aggregate({
+      _sum: { promptTokens: true, completionTokens: true },
+      where: { chat: { userId }, role: 'assistant', createdAt: { gte: start } },
+    })
+    const usedTokens = (sums._sum.promptTokens ?? 0) + (sums._sum.completionTokens ?? 0)
+    return { budgetTokens, usedTokens, windowStart: start, resetsAt }
+  }
+
+  /**
+   * 超预算即拒。放在生成之前、且在 controller 切到 SSE 之前调用 ——
+   * 客户端拿到的才是真实 HTTP 429 与可读原因，而不是混在流里的一行文本。
+   */
+  async assertTokenBudget(userId: string): Promise<void> {
+    const state = await this.budgetStatus(userId)
+    if (!isOverBudget(state)) return
+    throw new HttpException(
+      {
+        statusCode: 429,
+        message: budgetMessage(state),
+        reason: 'token_budget',
+        usedTokens: state.usedTokens,
+        budgetTokens: state.budgetTokens,
+        resetsAt: state.resetsAt.toISOString(),
+      },
+      429,
+    )
   }
 
   // ===== AI 对话 =====

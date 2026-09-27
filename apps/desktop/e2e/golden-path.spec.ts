@@ -172,3 +172,18 @@ test('断连后重新进入会话：未决的建单确认卡被恢复并可继�
     { requestId: expect.stringContaining('chat-e2e-1:'), approved: true },
   ])
 })
+
+test('今日 token 预算用尽：展示服务端原因，不走非流式回退', async () => {
+  // 预算/并发/会话忙属于「拒绝」而不是「这条链路坏了」。回退到非流式端点只会再被拒一次，
+  // 并且把真实原因盖成「无法连接到服务器」，还会贴上误导性的「降级回答」标记
+  backend.setMode('budget-exhausted')
+  await boot()
+
+  await win.locator('textarea[placeholder="向智能助手发送指令..."]').fill(PROMPT)
+  await win.locator('button[title="发送"]').click()
+
+  await expect(win.locator('text=今天的模型用量已达预算上限 10000 tokens')).toBeVisible()
+  expect(backend.requestLog.filter((r) => r.endsWith('/completions'))).toEqual([])
+  await expect(win.locator('text=降级回答 · 不会自动升级工单')).toHaveCount(0)
+  await expect(win.locator('text=无法连接到服务器')).toHaveCount(0)
+})

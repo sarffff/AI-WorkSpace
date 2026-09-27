@@ -128,6 +128,13 @@ AI-Workspace/
       （那一刻没有中间 yield，queued 的 return() 指望不上，否则会话槽位要被占到超时窗口跑完）。
       一个反直觉的点：SDK 在 abort 时把流关成「正常结束」而不是抛错，所以生成结束后还要再查一次，
       不然截断的回答会被当完整回答落库
+- [x] **每用户每日 token 预算**：限流管的是频率，管不住用量 —— 一路跑飞的 Agent 循环
+      几分钟就能把上游配额吃穿，而那笔钱按 token 计。`USER_DAILY_TOKEN_BUDGET`
+      （缺省 0=不限）按自然日汇总该用户 assistant 消息已落库的 token 数，用满即在
+      生成前拒（真实 HTTP 429 + 原因 `token_budget` + 剩余额度与重置时间）。
+      流式与非流式旁路都过闸门。客户端据此区分「拒绝」与「链路故障」：
+      预算/并发/会话忙不再触发无谓的非流式回退（此前回退只会再被拒一次，
+      并把真实原因盖成「无法连接到服务器」，还贴上误导的「降级回答」标记）
 - [ ] Electron 打包发布：`electron-updater` 已在主进程接线（仅打包态检查更新），
       后端 API 地址支持 localStorage > `VITE_API_BASE_URL` > 默认值三级解析；
       仍缺更新源 (feed URL) 与签名产物，即「能打包」但「未可发布」
@@ -197,7 +204,7 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
 版本号，`eval:collect` 导出的 👎 负例也带着它。于是"改了提示词到底有没有修好这批负例"
 是个可回答的问题 —— 在此之前负例只能看到工具轨迹，看不到当时的行为规则是哪一版。
 
-## 🚦 限流与并发配额
+## 🚦 限流、并发与用量配额
 
 一次 Agent 对话会打出 1-4 次决策调用 + 1 次流式生成，并在服务端挂住一条 SSE
 （HITL 确认门更可以挂很久），因此两层约束：
@@ -208,8 +215,16 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
 | `THROTTLE_LIMIT`                  | 600    | 窗口内每用户请求数（客户端有轮询，不宜过紧）                                        |
 | `STREAM_RATE_LIMIT_PER_MIN`       | 20     | 对话流端点单独收紧                                                                  |
 | `MAX_CONCURRENT_STREAMS_PER_USER` | 2      | 每用户**在途**流上限，超出返回 HTTP 429                                             |
+| `USER_DAILY_TOKEN_BUDGET`         | 0=不限 | 每用户每个自然日的 token 预算，用满返回 HTTP 429（原因 `token_budget`）             |
 | `TOOL_TIMEOUT_MS`                 | 30000  | 只读工具等待上限，超时回传结构化错误驱动改道（写工具不设超时）                      |
 | `CONFIRM_WAIT_TIMEOUT_MS`         | 300000 | HITL 确认门最长等待。超时只是本轮收尾：草稿保持 pending，之后重新进入会话可继续确认 |
+
+频率与用量是两件事：前三项管「多久打一次」，`USER_DAILY_TOKEN_BUDGET` 管「一次烧多少」。
+一路跑飞的 Agent 循环（反思轮反复重查、超长历史顶着上下文上限）能在几分钟内吃穿上游配额，
+而那笔钱按 token 计。预算口径直接取 `Message` 上已落库的 prompt/completion token 之和 ——
+与看板同一份数字，也不依赖 `AgentRun`（`AGENT_TRACE=off` 时不落轨迹，用它会在关掉观测的情况下
+静默变成无限制）。闸门放在 controller 切 SSE 之前，两条生成路径（流式与非流式旁路）都过：
+客户端拿到的是真实 429 与可读原因，而不是混在流里的一行错误文本。
 
 限流按**用户**（JWT 的单向哈希）分桶而非 IP —— 办公室里所有人共用一个出口 IP，
 按 IP 限流会让同事之间互相拖累。计数是单进程内存态，多实例部署需换 Redis。

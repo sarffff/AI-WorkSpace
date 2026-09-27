@@ -32,7 +32,7 @@ import type {
   TicketRef,
   ToolTraceStep,
 } from '@servicedesk/sdk'
-import { FEEDBACK_REASON_OPTIONS, TICKET_CATEGORY_OPTIONS } from '@servicedesk/sdk'
+import { ApiError, FEEDBACK_REASON_OPTIONS, TICKET_CATEGORY_OPTIONS } from '@servicedesk/sdk'
 import {
   Send,
   Bot,
@@ -819,6 +819,21 @@ export const ChatPage: React.FC = () => {
           const title = userMsg.length > 10 ? userMsg.slice(0, 10) + '...' : userMsg
           dispatch(renameChat({ id: sessionId, title }))
           api.renameChat(sessionId, title).catch(() => {})
+        }
+        // 429 / 409 是「拒绝」不是「这条链路坏了」：非流式旁路同样过闸门与互斥，
+        // 回退过去只会再被拒一次，还把原因盖成了「无法连接到服务器」
+        if (err instanceof ApiError && (err.status === 429 || err.status === 409)) {
+          dispatch(
+            addMessage({
+              id: Date.now().toString(),
+              sessionId,
+              role: 'assistant',
+              content: err.message,
+              timestamp: ts,
+            }),
+          )
+          dispatch(setIsGenerating(false))
+          return
         }
         try {
           const res = await api.sendMessage(sessionId, {

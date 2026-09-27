@@ -102,9 +102,21 @@ export interface MockBackend {
   tickets: MockTicket[]
   /** 造一个「断连后遗留的未决建单草稿」场景，用于验证恢复确认卡 */
   seedPendingDraft: () => void
+  /** 'budget-exhausted'：两条生成都回真实 HTTP 429（真实服务端 SSE 与非流式旁路都过闸门） */
+  setMode: (mode: MockMode) => void
   /** 用例之间清空记录与建单结果 */
   reset: () => void
   close: () => Promise<void>
+}
+
+export type MockMode = 'normal' | 'budget-exhausted'
+
+export const BUDGET_REJECT_BODY = {
+  statusCode: 429,
+  message: '今天的模型用量已达预算上限 10000 tokens，00:00 后自动重置',
+  reason: 'token_budget',
+  usedTokens: 11000,
+  budgetTokens: 10000,
 }
 
 function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -169,6 +181,7 @@ export async function startMockBackend(): Promise<MockBackend> {
   let persistedAnswer: string | null = null
   // 建单确认闸门：SSE 生成器在此挂起，直到前端 POST /confirm-ticket
   let resolveConfirm: ((approved: boolean) => void) | null = null
+  let mode: MockMode = 'normal'
 
   const createTicketFromDraft = (): MockTicket => {
     const now = new Date().toISOString()
@@ -344,6 +357,8 @@ export async function startMockBackend(): Promise<MockBackend> {
     }
     const streamMatch = path.match(/^\/chats\/([^/]+)\/completions\/stream$/)
     if (method === 'POST' && streamMatch) {
+      // 真实服务端在切到 SSE 之前就用 JSON 拒绝超预算的请求：客户端拿到的才是真实 429
+      if (mode === 'budget-exhausted') return json(res, 429, BUDGET_REJECT_BODY)
       const body = await readBody(req)
       return handleStream(res, streamMatch[1], String(body.prompt ?? ''))
     }
@@ -351,6 +366,7 @@ export async function startMockBackend(): Promise<MockBackend> {
     // 所以引用来源要回传、由客户端标注为降级回答
     const completionsMatch = path.match(/^\/chats\/([^/]+)\/completions$/)
     if (method === 'POST' && completionsMatch) {
+      if (mode === 'budget-exhausted') return json(res, 429, BUDGET_REJECT_BODY)
       return json(res, 201, {
         success: true,
         data: ANSWER_DEGRADED,
@@ -401,6 +417,10 @@ export async function startMockBackend(): Promise<MockBackend> {
       tickets.length = 0
       persistedAnswer = null
       pendingDraft = null
+      mode = 'normal'
+    },
+    setMode: (next: MockMode) => {
+      mode = next
     },
     seedPendingDraft: () => {
       pendingDraft = {

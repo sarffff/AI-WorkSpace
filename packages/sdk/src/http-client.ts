@@ -49,6 +49,37 @@ function handleUnauthorized() {
   }
 }
 
+/**
+ * 带 HTTP 状态的上游错误。
+ * 状态码是有用的：429（并发超了 / 今天 token 预算用尽）与 409（该会话已有流在跑）
+ * 是「拒绝」，换条路重试也没意义；而网络层失败才值得回退到非流式端点。
+ */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    /** 服务端给出的细分原因，如 token_budget */
+    readonly reason?: string,
+  ) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
+
+/** 把非 2xx 响应翻成 ApiError：优先用服务端写的可读 message */
+async function toApiError(res: Response): Promise<ApiError> {
+  let detail = ''
+  let reason: string | undefined
+  try {
+    const body = await res.json()
+    if (typeof body?.message === 'string') detail = body.message
+    if (typeof body?.reason === 'string') reason = body.reason
+  } catch {
+    // 非 JSON 错误体（网关 HTML 页等）：回落到状态文本
+  }
+  return new ApiError(detail || `HTTP ${res.status}: ${res.statusText}`, res.status, reason)
+}
+
 export interface ServerChatSession {
   id: string
   title: string
@@ -103,15 +134,7 @@ export class HttpClient {
     })
     if (!res.ok) {
       if (res.status === 401) handleUnauthorized()
-      // 尝试解析 NestJS 异常体中的 message 字段，给用户可读的报错
-      let detail = ''
-      try {
-        const body = await res.json()
-        if (typeof body?.message === 'string') detail = body.message
-      } catch {
-        // ignore
-      }
-      throw new Error(detail || `HTTP ${res.status}: ${res.statusText}`)
+      throw await toApiError(res)
     }
     return res.json()
   }
@@ -232,14 +255,7 @@ export class HttpClient {
     })
     if (!res.ok) {
       if (res.status === 401) handleUnauthorized()
-      let detail = ''
-      try {
-        const body = await res.json()
-        if (typeof body?.message === 'string') detail = body.message
-      } catch {
-        // ignore
-      }
-      throw new Error(detail || `HTTP ${res.status}: ${res.statusText}`)
+      throw await toApiError(res)
     }
     return res.json()
   }
@@ -424,7 +440,9 @@ export class HttpClient {
 
     if (!res.ok) {
       if (res.status === 401) handleUnauthorized()
-      throw new Error(`HTTP ${res.status}: ${res.statusText}`)
+      // 服务端在切到 SSE 之前用 JSON 拒绝（并发超了 / 会话忙 / 今天 token 预算用尽）：
+      // 只报 statusText 会把「今天用量到顶」这种可读原因丢掉，客户端也无从判断该不该回退
+      throw await toApiError(res)
     }
 
     const reader = res.body!.getReader()

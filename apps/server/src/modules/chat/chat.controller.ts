@@ -84,6 +84,8 @@ export class ChatController {
     @Body() body: { prompt: string; model?: string; useRag?: boolean; systemPrompt?: string },
   ) {
     await this.chatService.assertOwned(userId, id)
+    // 旁路也要过闸门：客户端流式失败时会回退到这里，只守 SSE 等于没守
+    await this.chatService.assertTokenBudget(userId)
     const { reply, sources } = await this.chatService.generateAiResponse(
       id,
       body.prompt,
@@ -104,7 +106,11 @@ export class ChatController {
     @Body() body: { prompt: string; model?: string; useRag?: boolean; systemPrompt?: string },
     @Res() res: Response,
   ) {
-    // 并发上限先行拦截，且必须在切到 SSE 之前：那样客户端拿到的才是真实 HTTP 429，
+    // 用量闸门同样必须在切到 SSE 之前（且放在占槽之前，拒掉就不用归还任何东西）：
+    // 客户端要能分清「今天预算用尽」和「回答出错」，前者重试也没用
+    await this.chatService.assertTokenBudget(userId)
+
+    // 并发上限先行拦截，且必须在写 SSE 响应头之前：那样客户端拿到的才是真实 HTTP 429，
     // 而不是混在流内 error 帧里的文本 —— 前端把后者当"回答出错"处理，用户看不到是被限流
     if (!this.slots.tryAcquire(userId)) {
       const max = this.slots.maxPerUser()
