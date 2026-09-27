@@ -44,7 +44,8 @@ const USER = {
   name: 'E2E 坐席',
   avatar: null,
   department: 'IT',
-  // 员工视角：工单列表只见自己创建的，无需 /tickets/staff 与 /tickets/stats 这两个坐席端点
+  // 默认员工视角：工单列表只见自己创建的，无需 /tickets/staff 与 /tickets/stats 这两个坐席端点。
+  // 运营看板是 staffOnly，需要坐席角色的用例走 setRole('agent')
   role: 'employee',
 }
 
@@ -52,6 +53,50 @@ const CHAT_ID = 'chat-e2e-1'
 const REQUEST_ID = `${CHAT_ID}:1700000000000:e2edraft`
 const PROMPT_TEXT = '我的 VPN 连不上，证书也重新装过了'
 const DRAFT_TITLE = 'VPN 账号疑似被锁定，需管理员解锁'
+
+// 看板其余指标的最小可用返回：面板卡在 overview 为空时整块不渲染，
+// 所以验偏转率必须先有 overview
+const ANALYTICS_OVERVIEW = {
+  periodDays: 30,
+  totalRuns: 12,
+  totalToolCalls: 9,
+  totalPromptTokens: 48000,
+  totalCompletionTokens: 6200,
+  avgRounds: 2.1,
+  avgTotalMs: 5400,
+  searchHitRate: 0.75,
+  ticketConversionRate: 0.25,
+  toolDistribution: [{ tool: 'search_knowledge', count: 9 }],
+  modelDistribution: [{ model: 'e2e-model', runs: 12 }],
+  daily: [],
+  feedback: {
+    up: 4,
+    down: 2,
+    rated: 6,
+    satisfactionRate: 0.6667,
+    reasonDistribution: [{ reason: 'unsolved', count: 2 }],
+  },
+}
+
+// 口径与服务端 analytics/deflection.ts 一致：12 个接住的会话里 3 个升级、
+// 2 个未升级但被打了 👎、1 个只提问没回答、1 张老工单追不回会话
+const DEFLECTION = {
+  days: 30,
+  since: new Date(Date.now() - 30 * 86400_000).toISOString(),
+  answeredSessions: 12,
+  escalatedSessions: 3,
+  deflectedSessions: 9,
+  deflectionRate: 0.75,
+  lowConfidenceDeflections: 2,
+  lowConfidenceShare: 0.2222,
+  unansweredSessions: 1,
+  unattributedAgentTickets: 1,
+  attributionCoverage: 0.75,
+  knowledgeGaps: [
+    { category: 'network', escalated: 2 },
+    { category: 'account', escalated: 1 },
+  ],
+}
 
 const SOURCES = [
   {
@@ -104,6 +149,8 @@ export interface MockBackend {
   seedPendingDraft: () => void
   /** 'budget-exhausted'：两条生成都回真实 HTTP 429（真实服务端 SSE 与非流式旁路都过闸门） */
   setMode: (mode: MockMode) => void
+  /** 切换登录者角色：运营看板是 staffOnly，默认员工进不去 */
+  setRole: (role: 'employee' | 'agent') => void
   /** 用例之间清空记录与建单结果 */
   reset: () => void
   close: () => Promise<void>
@@ -182,6 +229,8 @@ export async function startMockBackend(): Promise<MockBackend> {
   // 建单确认闸门：SSE 生成器在此挂起，直到前端 POST /confirm-ticket
   let resolveConfirm: ((approved: boolean) => void) | null = null
   let mode: MockMode = 'normal'
+  let role: 'employee' | 'agent' = 'employee'
+  const sessionUser = () => ({ ...USER, role })
 
   const createTicketFromDraft = (): MockTicket => {
     const now = new Date().toISOString()
@@ -274,10 +323,20 @@ export async function startMockBackend(): Promise<MockBackend> {
     requestLog.push(`${method} ${path}`)
 
     if (method === 'POST' && path === '/auth/login') {
-      return json(res, 201, { token: 'e2e-jwt', user: USER })
+      return json(res, 201, { token: 'e2e-jwt', user: sessionUser() })
     }
     if (method === 'GET' && path === '/auth/me') {
-      return json(res, 200, USER)
+      return json(res, 200, sessionUser())
+    }
+    // ===== 运营看板（staffOnly：只有坐席/管理员进得去这块页面） =====
+    if (method === 'GET' && path === '/analytics/overview') {
+      return json(res, 200, ANALYTICS_OVERVIEW)
+    }
+    if (method === 'GET' && path === '/analytics/deflection') {
+      return json(res, 200, DEFLECTION)
+    }
+    if (method === 'GET' && path.startsWith('/analytics/runs')) {
+      return json(res, 200, [])
     }
     if (method === 'GET' && path === '/chats') {
       return json(
@@ -418,9 +477,13 @@ export async function startMockBackend(): Promise<MockBackend> {
       persistedAnswer = null
       pendingDraft = null
       mode = 'normal'
+      role = 'employee'
     },
     setMode: (next: MockMode) => {
       mode = next
+    },
+    setRole: (next: 'employee' | 'agent') => {
+      role = next
     },
     seedPendingDraft: () => {
       pendingDraft = {

@@ -15,6 +15,7 @@ import type {
   MessageFeedback,
   MessageFeedbackReason,
   AgentRunOverview,
+  DeflectionOverview,
   AgentRunItem,
   AgentRunDetail,
   AppSettings,
@@ -413,6 +414,11 @@ export class HttpClient {
   // 运行看板概览（KPI/分布/每日趋势，仅坐席/管理员；days 范围 1-90）
   async getAgentRunOverview(days = 30): Promise<AgentRunOverview> {
     return this.request<AgentRunOverview>(`/analytics/overview?days=${days}`)
+  }
+
+  // 偏转率：AI 接住的会话里有多少没落成人工工单（含低置信与知识缺口）
+  async getDeflection(days = 30): Promise<DeflectionOverview> {
+    return this.request<DeflectionOverview>(`/analytics/deflection?days=${days}`)
   }
 
   // 运行明细列表（最近优先；limit 1-200）

@@ -1,7 +1,13 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { useSelector } from 'react-redux'
-import type { AgentRunDetail, AgentRunItem, AgentRunOverview, AgentRunStep } from '@servicedesk/sdk'
-import { FEEDBACK_REASON_OPTIONS } from '@servicedesk/sdk'
+import type {
+  AgentRunDetail,
+  AgentRunItem,
+  AgentRunOverview,
+  AgentRunStep,
+  DeflectionOverview,
+} from '@servicedesk/sdk'
+import { FEEDBACK_REASON_OPTIONS, TICKET_CATEGORY_OPTIONS } from '@servicedesk/sdk'
 import {
   BarChart3,
   Bot,
@@ -104,6 +110,86 @@ const DailyTrend: React.FC<{ daily: AgentRunOverview['daily'] }> = ({ daily }) =
           输出
         </span>
       </div>
+    </div>
+  )
+}
+
+// 偏转率面板。口径见服务端 analytics/deflection.ts：单位是会话，分母只含有过 AI 回答的会话。
+// null 一律显示「—」而不是 0 —— 0% 会被读成"一个都没接住"，而事实是没有可算的数据。
+const DeflectionPanel: React.FC<{ d: DeflectionOverview }> = ({ d }) => {
+  const catLabel = (c: string) => TICKET_CATEGORY_OPTIONS.find((o) => o.value === c)?.label ?? c
+  const maxGap = d.knowledgeGaps[0]?.escalated ?? 1
+
+  return (
+    <div className="rounded-lg bg-s4 border border-line p-3.5">
+      <div className="flex items-baseline justify-between gap-3 flex-wrap">
+        <div>
+          <p className="text-[9px] font-mono text-t4 tracking-wider">
+            偏转率（近 {d.days} 天 · 按会话）
+          </p>
+          <p className="font-display text-2xl font-bold text-brand mt-1">{pct(d.deflectionRate)}</p>
+          <p className="text-[10px] font-mono text-t3 mt-1">
+            {d.answeredSessions} 个有 AI 回答的会话中，{d.deflectedSessions} 个没落成人工工单
+          </p>
+        </div>
+
+        <div className="flex gap-5">
+          <div>
+            <p className="text-[9px] font-mono text-t4">AI 升级会话</p>
+            <p className="font-display text-lg font-bold text-signal mt-0.5">
+              {d.escalatedSessions}
+            </p>
+          </div>
+          <div>
+            <p className="text-[9px] font-mono text-t4">低置信偏转</p>
+            <p className="font-display text-lg font-bold text-amber-300 mt-0.5">
+              {d.lowConfidenceDeflections}
+              <span className="text-[10px] font-mono text-t4 ml-1">
+                {pct(d.lowConfidenceShare)}
+              </span>
+            </p>
+          </div>
+          <div>
+            <p className="text-[9px] font-mono text-t4">未获回答</p>
+            <p className="font-display text-lg font-bold text-t2 mt-0.5">{d.unansweredSessions}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* 知识缺口：AI 升级掉的工单分类分布 —— 排第一的就是最该补文档的地方 */}
+      <div className="mt-3 pt-3 border-t border-line">
+        <p className="text-[9px] font-mono text-t4 tracking-wider mb-2">
+          知识缺口（AI 升级的工单按分类）
+        </p>
+        {d.knowledgeGaps.length === 0 ? (
+          <p className="text-[10px] font-mono text-t4">期内没有 AI 升级的工单</p>
+        ) : (
+          <div className="space-y-1.5">
+            {d.knowledgeGaps.map((g) => (
+              <div key={g.category} className="flex items-center gap-2.5">
+                <span className="text-[10px] font-mono text-t3 w-16 shrink-0">
+                  {catLabel(g.category)}
+                </span>
+                <div className="flex-1 h-1.5 rounded-full bg-line overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-signal/70"
+                    style={{ width: `${Math.max(6, (g.escalated / maxGap) * 100)}%` }}
+                  />
+                </div>
+                <span className="text-[10px] font-mono text-t4 w-6 text-right">{g.escalated}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* 口径脚注：把这两个数的水分摆在台面上，不藏在 tooltip 里 */}
+      <p className="mt-3 text-[9px] font-mono text-t4 leading-relaxed">
+        低置信偏转 = 未升级但被用户打了 👎；未获回答的会话不进任何比率（断连/生成失败不算接住
+        也不算没接住）。
+        {d.unattributedAgentTickets > 0 &&
+          ` 另 ${d.unattributedAgentTickets} 张 AI 工单追不回会话归属（历史数据），未计入分子，归属可查率 ${pct(d.attributionCoverage)}。`}
+      </p>
     </div>
   )
 }
@@ -372,9 +458,26 @@ const RunsPanel: React.FC = () => {
 const OverviewPanel: React.FC = () => {
   const [days, setDays] = useState(30)
   const [overview, setOverview] = useState<AgentRunOverview | null>(null)
+  const [deflection, setDeflection] = useState<DeflectionOverview | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [nonce, setNonce] = useState(0)
+
+  // 偏转率单独一个请求：它失败不该把整块看板清空（两者数据源不同）
+  useEffect(() => {
+    let cancelled = false
+    api
+      .getDeflection(days)
+      .then((d) => {
+        if (!cancelled) setDeflection(d)
+      })
+      .catch(() => {
+        if (!cancelled) setDeflection(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [days, nonce])
 
   useEffect(() => {
     setLoading(true)
@@ -491,6 +594,9 @@ const OverviewPanel: React.FC = () => {
               </div>
             ))}
           </div>
+
+          {/* 偏转率：这块看板要回答的那个问题 —— AI 接住了一线多少 */}
+          {deflection && <DeflectionPanel d={deflection} />}
 
           <div className="grid grid-cols-2 gap-4 mt-4">
             {/* 每日 token 趋势 */}

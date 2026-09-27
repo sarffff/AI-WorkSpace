@@ -187,3 +187,34 @@ test('今日 token 预算用尽：展示服务端原因，不走非流式回退'
   await expect(win.locator('text=降级回答 · 不会自动升级工单')).toHaveCount(0)
   await expect(win.locator('text=无法连接到服务器')).toHaveCount(0)
 })
+
+test('运营看板的偏转率面板真的渲染出来（数字、缺口、口径脚注）', async () => {
+  // 类型检查过不等于渲染得出来：这块面板有 null 率、空缺口数组两个容易炸的形状
+  backend.setRole('agent')
+  await boot()
+
+  await win.getByRole('button', { name: /运营看板/ }).click()
+
+  // 面板内断言（不能全页找 "75%"：KPI 卡的检索命中率也是 75%，会假通过）
+  const panel = win.locator('div.rounded-lg', {
+    has: win.getByText('偏转率（近 30 天 · 按会话）'),
+  })
+  await expect(panel).toHaveCount(1)
+
+  // 头条数字 + 分母说明（12 个接住会话里 9 个没落成工单 → 75%）
+  await expect(panel.getByText('75%', { exact: true })).toBeVisible()
+  await expect(panel.getByText('12 个有 AI 回答的会话中，9 个没落成人工工单')).toBeVisible()
+
+  // 低置信与未获回答各自单列，不混进比率（exact：这两个词在口径脚注里也出现）
+  await expect(panel.getByText('低置信偏转', { exact: true })).toBeVisible()
+  await expect(panel.getByText('未获回答', { exact: true })).toBeVisible()
+
+  // 知识缺口：分类标签要被翻成中文，且按升级数排（网络访问 2 > 账号权限 1）
+  await expect(panel.getByText('知识缺口（AI 升级的工单按分类）')).toBeVisible()
+  const gapRows = panel.getByText(/^(网络访问|账号权限)$/)
+  expect(await gapRows.allTextContents()).toEqual(['网络访问', '账号权限'])
+
+  // 脚注里必须把「追不回归属的老数据没进分子」说出来
+  await expect(panel.getByText(/追不回会话归属/)).toBeVisible()
+  expect(backend.requestLog).toContain('GET /analytics/deflection')
+})

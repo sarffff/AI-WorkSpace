@@ -23,6 +23,8 @@ export type {
   FeedbackOverview,
   FeedbackReasonItem,
   AgentRunOverview,
+  DeflectionOverview,
+  KnowledgeGapItem,
   AgentRunItem,
   AgentRunDetail,
   AgentRunStep,

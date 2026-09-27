@@ -156,16 +156,32 @@ function makeService(overrides?: {
     feedbackReason: string | null
     _count: { _all: number }
   }[]
+  // deflection 的三组聚合行 + 未归属计数
+  roleRows?: { chatId: string; role: string; _count: { _all: number } }[]
+  downRows?: { chatId: string; _count: { _all: number } }[]
+  ticketRows?: { chatId: string | null; _count: { _all: number } }[]
+  categoryRows?: { category: string; _count: { _all: number } }[]
+  unattributed?: number
 }) {
+  const o = overrides
   const prisma = {
     agentRun: {
-      findMany: jest.fn().mockResolvedValue(overrides?.runs ?? runs),
-      findUnique: jest
-        .fn()
-        .mockResolvedValue(overrides?.detail !== undefined ? overrides.detail : runs[0]),
+      findMany: jest.fn().mockResolvedValue(o?.runs ?? runs),
+      findUnique: jest.fn().mockResolvedValue(o?.detail !== undefined ? o.detail : runs[0]),
     },
     message: {
-      groupBy: jest.fn().mockResolvedValue(overrides?.feedbackRows ?? []),
+      // 按 by 分派，避免和调用顺序耦合（overview 与 deflection 用同一个 groupBy 不同分组）
+      groupBy: jest.fn(async (args: { by: string[] }) => {
+        if (args.by.includes('role')) return o?.roleRows ?? []
+        if (args.by.includes('feedback')) return o?.feedbackRows ?? []
+        return o?.downRows ?? []
+      }),
+    },
+    ticket: {
+      groupBy: jest.fn(async (args: { by: string[]; where: Record<string, unknown> }) =>
+        args.by.includes('category') ? (o?.categoryRows ?? []) : (o?.ticketRows ?? []),
+      ),
+      count: jest.fn(async (_args: { where: Record<string, unknown> }) => o?.unattributed ?? 0),
     },
   }
   return {
@@ -293,5 +309,73 @@ describe('AnalyticsService', () => {
 
     const { service: empty } = makeService({ detail: null })
     await expect(empty.runDetail(staff, 'missing')).rejects.toThrow(NotFoundException)
+  })
+})
+
+// groupBy 行 → 会话事实 这层映射：纯函数已有自己的 spec，这里只测装配
+describe('AnalyticsService.deflection', () => {
+  it('普通员工不可见', async () => {
+    const { service } = makeService()
+    await expect(service.deflection(employee)).rejects.toThrow(ForbiddenException)
+  })
+
+  it('按 role 分桶装配会话事实，偏转率按会话算', async () => {
+    const { service } = makeService({
+      roleRows: [
+        { chatId: 'c1', role: 'user', _count: { _all: 2 } },
+        { chatId: 'c1', role: 'assistant', _count: { _all: 2 } },
+        { chatId: 'c2', role: 'user', _count: { _all: 1 } },
+        { chatId: 'c2', role: 'assistant', _count: { _all: 1 } },
+        { chatId: 'c3', role: 'user', _count: { _all: 1 } },
+        { chatId: 'c3', role: 'assistant', _count: { _all: 1 } },
+        // 只提问没人答（断连/失败）：不进分母
+        { chatId: 'c4', role: 'user', _count: { _all: 3 } },
+      ],
+      downRows: [{ chatId: 'c3', _count: { _all: 1 } }],
+      ticketRows: [{ chatId: 'c2', _count: { _all: 1 } }],
+      categoryRows: [
+        { category: 'network', _count: { _all: 1 } },
+        { category: 'other', _count: { _all: 0 } },
+      ],
+      unattributed: 0,
+    })
+
+    const r = await service.deflection(staff, 30)
+    expect(r).toMatchObject({
+      answeredSessions: 3,
+      escalatedSessions: 1,
+      deflectedSessions: 2,
+      deflectionRate: 0.6667,
+      lowConfidenceDeflections: 1,
+      unansweredSessions: 1,
+      attributionCoverage: 1,
+    })
+    // 知识缺口按升级数排，零的丢掉
+    expect(r.knowledgeGaps).toEqual([{ category: 'network', escalated: 1 }])
+  })
+
+  it('查询条件带期内与来源，未归属单独 count（不能靠 JS 过滤代替）', async () => {
+    const { service, prisma } = makeService({ unattributed: 2 })
+    const r = await service.deflection(staff, 7)
+
+    const since = new Date(Date.now() - 7 * 86400_000)
+    const countArgs = prisma.ticket.count.mock.calls[0][0] as {
+      where: { source: string; createdAt: { gte: Date }; chatId: null }
+    }
+    expect(countArgs.where).toEqual({
+      source: 'agent',
+      createdAt: expect.any(Object),
+      chatId: null,
+    })
+    expect(countArgs.where.createdAt.gte.getTime()).toBeCloseTo(since.getTime(), -2)
+    const groupArgs = prisma.ticket.groupBy.mock.calls[0][0] as { where: Record<string, unknown> }
+    expect(groupArgs.where.source).toBe('agent')
+    expect((groupArgs.where.createdAt as { gte: Date }).gte.getTime()).toBeCloseTo(
+      since.getTime(),
+      -2,
+    )
+    // 2 张老工单追不回会话：不进分子，但 coverage 要体现出来
+    expect(r.unattributedAgentTickets).toBe(2)
+    expect(r.attributionCoverage).toBe(0)
   })
 })

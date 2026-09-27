@@ -1,6 +1,7 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common'
 import { PrismaService } from '@/prisma/prisma.service'
 import type { SafeUser } from '../auth/auth.service'
+import { computeDeflection, rankKnowledgeGaps, type SessionFact } from './deflection'
 
 // Agent 运行运营看板（仅坐席/管理员）：
 // - overview 在 JS 内聚合最近 N 天运行数据（上限 1000 条防内存失控），
@@ -141,6 +142,77 @@ export class AnalyticsService {
           .map(([reason, count]) => ({ reason, count }))
           .sort((a, b) => b.count - a.count),
       },
+    }
+  }
+
+  /**
+   * 偏转率：期内「AI 接住的会话」里有多少没落成人工工单。
+   *
+   * 全部走 DB 侧 groupBy（不像 overview 那样拉 1000 行回 JS）：这里要的是
+   * 每个会话的计数，行数由活跃会话数决定而不是消息数决定，拉明细会立刻失控。
+   * 口径与边界都在 computeDeflection 里，见 deflection.ts。
+   */
+  async deflection(user: SafeUser, days = 30) {
+    this.assertStaff(user)
+    const since = new Date(Date.now() - days * AnalyticsService.DAY_MS)
+
+    const [roleRows, downRows, ticketRows, unattributed, categoryRows] = await Promise.all([
+      // 提问数与回答数：role 分桶后按会话计数（同会话同期只有一行 per role）
+      this.prisma.message.groupBy({
+        by: ['chatId', 'role'],
+        where: { createdAt: { gte: since } },
+        _count: { _all: true },
+      }),
+      this.prisma.message.groupBy({
+        by: ['chatId'],
+        where: { role: 'assistant', feedback: 'down', feedbackAt: { gte: since } },
+        _count: { _all: true },
+      }),
+      this.prisma.ticket.groupBy({
+        by: ['chatId'],
+        where: { source: 'agent', createdAt: { gte: since }, chatId: { not: null } },
+        _count: { _all: true },
+      }),
+      this.prisma.ticket.count({
+        where: { source: 'agent', createdAt: { gte: since }, chatId: null },
+      }),
+      this.prisma.ticket.groupBy({
+        by: ['category'],
+        where: { source: 'agent', createdAt: { gte: since } },
+        _count: { _all: true },
+      }),
+    ])
+
+    const facts = new Map<string, SessionFact>()
+    const touch = (chatId: string): SessionFact => {
+      let f = facts.get(chatId)
+      if (!f) {
+        f = { chatId, answers: 0, agentTickets: 0, downs: 0, questions: 0 }
+        facts.set(chatId, f)
+      }
+      return f
+    }
+    for (const row of roleRows) {
+      const f = touch(row.chatId)
+      if (row.role === 'assistant') f.answers += row._count._all
+      else if (row.role === 'user') f.questions += row._count._all
+    }
+    for (const row of downRows) touch(row.chatId).downs += row._count._all
+    for (const row of ticketRows) {
+      if (row.chatId) touch(row.chatId).agentTickets += row._count._all
+    }
+
+    return {
+      days,
+      since: since.toISOString(),
+      ...computeDeflection({
+        sessions: [...facts.values()],
+        unattributedAgentTickets: unattributed,
+      }),
+      // 知识缺口：AI 升级掉的那些工单按分类排，排第一的就是"最该补文档"的地方
+      knowledgeGaps: rankKnowledgeGaps(
+        categoryRows.map((r) => ({ category: r.category, escalated: r._count._all })),
+      ),
     }
   }
 

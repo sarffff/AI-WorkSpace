@@ -16,6 +16,13 @@ export class AnalyticsController {
     return this.analyticsService.overview(user, d)
   }
 
+  // 偏转率：AI 接住的会话里有多少没落成人工工单（含低置信与知识缺口）
+  @Get('deflection')
+  deflection(@CurrentUser() user: SafeUser, @Query('days') days?: string) {
+    const d = Math.min(Math.max(parseInt(days || '30', 10) || 30, 1), 90)
+    return this.analyticsService.deflection(user, d)
+  }
+
   // 运行明细列表（limit 夹取 1-200 默认 50；offset >= 0）
   @Get('runs')
   listRuns(

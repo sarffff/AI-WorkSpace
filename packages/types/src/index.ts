@@ -340,6 +340,37 @@ export interface FeedbackOverview {
   reasonDistribution: FeedbackReasonItem[]
 }
 
+/** 知识缺口：AI 升级掉的工单按分类排，排第一即「最该补文档」的方向 */
+export interface KnowledgeGapItem {
+  category: TicketCategory | string
+  escalated: number
+}
+
+/**
+ * 偏转率：期内「AI 接住的会话」里有多少没落成人工工单。
+ * 单位是会话（不是消息也不是轮次）；所有 *Rate 为 0-1，无数据时为 null（不是 0）。
+ */
+export interface DeflectionOverview {
+  days: number
+  since: string
+  /** 分母：有过 AI 回答的会话数 */
+  answeredSessions: number
+  escalatedSessions: number
+  deflectedSessions: number
+  /** 偏转率；无接住会话时 null */
+  deflectionRate: number | null
+  /** 未升级但收到过 👎：AI 自称解决、用户不认 —— 偏转率里的水分 */
+  lowConfidenceDeflections: number
+  lowConfidenceShare: number | null
+  /** 有提问但整期没有一条 AI 回答（断连/失败），不进任何比率 */
+  unansweredSessions: number
+  /** 追不回会话归属的 AI 工单数（加列前的历史数据），不进分子 */
+  unattributedAgentTickets: number
+  /** AI 工单里能追回会话归属的比例 —— 偏转率的可信度自证；无 AI 工单时 null */
+  attributionCoverage: number | null
+  knowledgeGaps: KnowledgeGapItem[]
+}
+
 /** 运行明细列表项（轻量，不含 steps） */
 export interface AgentRunItem {
   id: string
