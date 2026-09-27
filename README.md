@@ -141,7 +141,15 @@ AI-Workspace/
       走的正是客户端断连那条路径（掐掉在途请求 → 保存半成品 → 落 partial 轨迹）。
       钩子必须是 `beforeApplicationShutdown`：Nest 的 `close()` 顺序是
       `onModuleDestroy → beforeApplicationShutdown → dispose()（关 HTTP 服务器）→
-  onApplicationShutdown`，放在后者里就已经晚了
+onApplicationShutdown`，放在后者里就已经晚了
+- [x] **外部内容进上下文的边界**：检索到的文档是**不可信输入**，而模型手里有 `create_ticket`
+      这个写工具。工具结果此前是裸的 `JSON.stringify(result)` 回填成 `role: 'tool'` 消息 ——
+      RAG 那条路径有「视为数据非指令」的标注，文档原文第二次进上下文时反而没了边界；
+      而 RAG 自己那行手写中文围栏也有个洞：文档照抄一句「—— 知识库检索片段结束 ——」
+      就能伪造闭合。现在两条路径统一走一个实现：一次性随机分隔符 + 显式数据声明，
+      内容里任何形状的仿造标记（换 nonce、换大小写、多几条横线）都先被中性化掉。
+      **这是边界卫生，不是抗注入修复** —— 模型仍然完整读得到那句话；
+      真正的兜底是写操作过 HITL 确认门、以及行级权限决定检索得到什么
 - [ ] Electron 打包发布：`electron-updater` 已在主进程接线（仅打包态检查更新），
       后端 API 地址支持 localStorage > `VITE_API_BASE_URL` > 默认值三级解析；
       仍缺更新源 (feed URL) 与签名产物，即「能打包」但「未可发布」
