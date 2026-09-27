@@ -39,15 +39,21 @@ const line = (label: string, v: number | null | string): string =>
   `  ${label.padEnd(22, ' ')}${typeof v === 'number' ? v : (v ?? '—')}`
 const hr = (title: string) => `\n===== ${title} =====`
 
-function printSuggestion(s: DispatchSuggestion): void {
+/** 坐席 id 直接打出来没人看得懂（老数据里管理员的 id 就是 '000000'），一律换成名字 */
+function makeWho(rows: Array<{ id: string; name: string | null; email: string }>) {
+  const names = new Map(rows.map((r) => [r.id, r.name || r.email]))
+  return (id: string | null) => (id ? (names.get(id) ?? id) : '—')
+}
+
+function printSuggestion(s: DispatchSuggestion, who: (id: string | null) => string): void {
   const cand = s.candidates
     .map(
       (c) =>
-        `${c.agentId}${c.affinity ? `(${c.affinity}单/在办${c.inFlight})` : `(在办${c.inFlight})`}`,
+        `${who(c.agentId)}${c.affinity ? `(${c.affinity}单/在办${c.inFlight})` : `(在办${c.inFlight})`}`,
     )
     .join(' ')
   console.log(
-    `  [${s.priority}] ${s.ticketId} ${s.category} → ${s.assigneeId ?? '（无人可派）'} ` +
+    `  [${s.priority}] ${s.category}｜${s.title.slice(0, 24)} → ${s.assigneeId ? who(s.assigneeId) : '（无人可派）'} ` +
       `依据=${s.basis} 证据=${s.evidence} 份额=${pct(s.confidence)}${cand ? ` 候选: ${cand}` : ''}`,
   )
 }
@@ -135,6 +141,12 @@ async function main(): Promise<void> {
 
     const analytics = app.get(AnalyticsService)
     const ticketsService = app.get(TicketsService)
+    const who = makeWho(
+      await prisma.user.findMany({
+        where: { role: { in: ['agent', 'admin'] } },
+        select: { id: true, name: true, email: true },
+      }),
+    )
 
     console.log(hr(`偏转率（按会话，近 ${days} 天）`))
     const def = await analytics.deflection(viewer, days)
@@ -188,7 +200,7 @@ async function main(): Promise<void> {
       console.log('  最该人工核对的几条：')
       for (const d of review) {
         console.log(
-          `    ${d.ticketId} ${d.category} 建议=${d.suggestedAssigneeId ?? '—'} 真值=${d.actualAssigneeId} ${d.hit ? '中' : '未中'}（${d.basis}${d.reassigned ? '，转过派' : ''}）`,
+          `    ${d.ticketId.slice(0, 8)} ${d.category} 建议=${who(d.suggestedAssigneeId)} 真值=${who(d.actualAssigneeId)} ${d.hit ? '中' : '未中'}（${d.basis}${d.reassigned ? '，转过派' : ''}）`,
         )
       }
     }
@@ -200,7 +212,7 @@ async function main(): Promise<void> {
     })
     console.log(line('待派单 / 可自动派', `${pv.pendingTotal} / ${pv.autoDispatchable}`))
     if (pv.noRoster) console.log('  花名册为空：没有任何坐席/管理员可派')
-    for (const s of pv.pending) printSuggestion(s)
+    for (const s of pv.pending) printSuggestion(s, who)
 
     console.log(hr('结论'))
     if (def.attributionCoverage === null) {

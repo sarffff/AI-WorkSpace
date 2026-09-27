@@ -98,7 +98,7 @@ function asViewer(user: {
 }
 
 async function audit(prisma: PrismaService): Promise<void> {
-  const [users, tickets, docs, messages] = await Promise.all([
+  const [users, tickets, docs, messages, runs] = await Promise.all([
     prisma.user.findMany({
       select: { id: true, email: true, name: true, role: true, department: true },
       orderBy: { createdAt: 'asc' },
@@ -133,6 +133,20 @@ async function audit(prisma: PrismaService): Promise<void> {
       select: { role: true, content: true, chatId: true },
       orderBy: { createdAt: 'asc' },
     }),
+    // AgentRun 是观测层（AGENT_TRACE 可关）：取样后要确认它真的落库了，
+    // 否则"检索零命中却直接作答"这类行为判据就没数据可查
+    prisma.agentRun.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 8,
+      select: {
+        id: true,
+        sources: true,
+        rounds: true,
+        toolCalls: true,
+        ticketId: true,
+        createdAt: true,
+      },
+    }),
   ])
 
   const nameOf = (id: string | null) => (id ? (users.find((u) => u.id === id)?.email ?? id) : '-')
@@ -162,9 +176,18 @@ async function audit(prisma: PrismaService): Promise<void> {
     }
   }
 
-  console.log(hr(`用户说过的话（${messages.filter((m) => m.role === 'user').length} 条）`))
-  for (const m of messages.filter((x) => x.role === 'user')) {
-    console.log(`  ${m.content.replace(/\s+/g, ' ').slice(0, 140)}`)
+  console.log(hr(`对话（${messages.length} 条）`))
+  for (const m of messages) {
+    console.log(
+      `  ${m.role === 'user' ? '问' : '答'}｜${m.content.replace(/\s+/g, ' ').slice(0, 150)}`,
+    )
+  }
+
+  console.log(hr(`Agent 运行轨迹（最近 ${runs.length} 条）`))
+  for (const r of runs) {
+    console.log(
+      `  ${r.createdAt.toISOString().slice(0, 16)} 决策轮=${r.rounds} 工具=${r.toolCalls} 检索命中=${r.sources} 工单=${r.ticketId ? r.ticketId.slice(0, 8) : '-'}`,
+    )
   }
 }
 
