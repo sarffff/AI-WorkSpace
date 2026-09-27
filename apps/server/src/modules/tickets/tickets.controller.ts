@@ -5,6 +5,12 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { CurrentUser } from '../auth/user-id.decorator'
 import type { SafeUser } from '../auth/auth.service'
 
+/** 查询参数取整：缺省或非法一律 undefined，交给服务端的默认值与钳制处理 */
+function intOpt(raw: string | undefined): number | undefined {
+  const n = parseInt(raw ?? '', 10)
+  return Number.isFinite(n) ? n : undefined
+}
+
 @Controller('tickets')
 @UseGuards(JwtAuthGuard)
 export class TicketsController {
@@ -27,6 +33,39 @@ export class TicketsController {
   stats(@CurrentUser() user: SafeUser, @Query('days') days?: string) {
     const d = Math.min(Math.max(parseInt(days || '30', 10) || 30, 1), 90)
     return this.ticketsService.stats(user, d)
+  }
+
+  // ===== 派单预演与回测（只读，绝不写 assigneeId） =====
+  //
+  // 自动派单要先回答"猜得中吗"：preview 看当下这堆没人接的单该给谁，backtest 看历史
+  // 上按同一套判据能命中多少。两个旋钮（minEvidence/maxLoad）走查询参数，
+  // 因为"多少证据才敢放手""几个人手算饱和"本来就是运营要试的阈值，不该钉死在代码里。
+
+  @Get('dispatch/preview')
+  dispatchPreview(
+    @CurrentUser() user: SafeUser,
+    @Query('days') days?: string,
+    @Query('limit') limit?: string,
+    @Query('minEvidence') minEvidence?: string,
+    @Query('maxLoad') maxLoad?: string,
+  ) {
+    return this.ticketsService.dispatchPreview(user, intOpt(days), intOpt(limit), {
+      minEvidence: intOpt(minEvidence),
+      maxLoad: intOpt(maxLoad),
+    })
+  }
+
+  @Get('dispatch/backtest')
+  dispatchBacktest(
+    @CurrentUser() user: SafeUser,
+    @Query('days') days?: string,
+    @Query('minEvidence') minEvidence?: string,
+    @Query('decisionsLimit') decisionsLimit?: string,
+  ) {
+    return this.ticketsService.dispatchBacktest(user, intOpt(days), {
+      minEvidence: intOpt(minEvidence),
+      decisionsLimit: intOpt(decisionsLimit),
+    })
   }
 
   @Post()

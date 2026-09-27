@@ -2,6 +2,12 @@ import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/commo
 import { PrismaService } from '@/prisma/prisma.service'
 import { CreateTicketDto, CreateTicketCommentDto, UpdateTicketDto } from './tickets.dto'
 import { CATEGORY_LABEL, TICKET_CATEGORIES } from './ticket-taxonomy'
+import {
+  backtestDispatch,
+  previewDispatch,
+  type DispatchAgent,
+  type DispatchTicketRow,
+} from './dispatch-preview'
 
 const AUTHOR_BRIEF = { select: { id: true, name: true, email: true, role: true } }
 
@@ -70,6 +76,130 @@ export class TicketsService {
       where: { role: { in: ['agent', 'admin'] } },
       select: { id: true, name: true, email: true, role: true },
       orderBy: [{ role: 'asc' }, { createdAt: 'asc' }],
+    })
+  }
+
+  // ===== 派单预演：只读，一个字段都不写 =====
+  //
+  // 「这单该给谁」目前是坐席的临场判断。在让机器接手之前，先拿历史工单量一遍命中率
+  // （口径住在 dispatch-preview.ts）：猜不中就说明路由规则不在分类维度里，自动派单不该上。
+  // 刻意不写库 —— 猜错的代价是单子在路上多躺一天，这个决定要用数字换，不能拿工单换。
+
+  /** 预演窗口比看板的 90 天上限长：派单要的是"谁做过这类"，窗口太短根本没有经验可学 */
+  private static readonly DISPATCH_MAX_DAYS = 365
+  private static readonly DISPATCH_DEFAULT_DAYS = 90
+  /** 时间线里"第一次派错了"的标记，与 update() 写入的事件文案同源 */
+  private static readonly REASSIGN_EVENT_PREFIX = '转派给'
+
+  private dispatchDays(days?: number) {
+    const d = typeof days === 'number' && Number.isFinite(days) ? Math.round(days) : 0
+    if (d <= 0) return TicketsService.DISPATCH_DEFAULT_DAYS
+    return Math.min(d, TicketsService.DISPATCH_MAX_DAYS)
+  }
+
+  /**
+   * 预演数据：花名册 + 工单行。
+   * 时间窗是「createdAt 在窗口内 或 至今未完结」，后半句不能省 —— 只按窗口取会把
+   * 三个月前挂到现在的老单当成不存在，手上压着老单的坐席反而算出来最闲。
+   */
+  private async loadDispatchData(
+    days: number,
+  ): Promise<{ agents: DispatchAgent[]; rows: DispatchTicketRow[] }> {
+    const since = new Date(Date.now() - days * 86_400_000)
+    const [users, tickets] = await Promise.all([
+      this.prisma.user.findMany({
+        where: { role: { in: ['agent', 'admin'] } },
+        select: { id: true, name: true, email: true, department: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+      this.prisma.ticket.findMany({
+        where: { OR: [{ createdAt: { gte: since } }, { status: { in: ['open', 'processing'] } }] },
+        select: {
+          id: true,
+          title: true,
+          category: true,
+          priority: true,
+          status: true,
+          createdAt: true,
+          updatedAt: true,
+          assigneeId: true,
+          creator: { select: { department: true } },
+        },
+        orderBy: { createdAt: 'asc' },
+      }),
+    ])
+    return {
+      agents: users.map((u) => ({ id: u.id, name: u.name || u.email, department: u.department })),
+      rows: tickets.map((t) => ({
+        id: t.id,
+        title: t.title,
+        category: t.category,
+        priority: t.priority,
+        assigneeId: t.assigneeId,
+        creatorDepartment: t.creator.department,
+        createdAt: t.createdAt,
+        // 完结时刻用 updatedAt 近似。时间线里的「已解决」事件更准，但为一次预演去拉
+        // 全部工单评论不值：resolvedAt 只管"何时起可作证据"和负载，两处都是偏保守的次级依据
+        resolvedAt: t.status === 'resolved' || t.status === 'closed' ? t.updatedAt : null,
+      })),
+    }
+  }
+
+  async dispatchPreview(
+    user: { role: string },
+    days?: number,
+    limit?: number,
+    knobs: { minEvidence?: number; maxLoad?: number | null } = {},
+  ) {
+    if (!this.isStaff(user)) {
+      throw new ForbiddenException('仅坐席/管理员可查看派单预演')
+    }
+    const periodDays = this.dispatchDays(days)
+    const { agents, rows } = await this.loadDispatchData(periodDays)
+    // 缺省/非法/0 都退回 50：清单再长也不该一屏灌不完
+    const capped = Math.min(Math.max(Math.round(limit ?? 0) || 50, 1), 200)
+    return {
+      periodDays,
+      roster: agents,
+      ...previewDispatch(rows, agents, new Date(), {
+        limit: capped,
+        minEvidence: knobs.minEvidence,
+        maxLoad: knobs.maxLoad,
+      }),
+    }
+  }
+
+  /**
+   * 历史回测：把每张派过人的单假装成没派过，只用它创建之前的经验重派一次。
+   *
+   * 命中的是"最终受理人"，而转过派的单第一次其实派错了 —— 所以另取转派事件，
+   * 单独报「这次转派本可以省掉」的条数，否则这个数字会把猜中纠正结果当成猜中首派。
+   */
+  async dispatchBacktest(
+    user: { role: string },
+    days?: number,
+    knobs: { minEvidence?: number; decisionsLimit?: number } = {},
+  ) {
+    if (!this.isStaff(user)) {
+      throw new ForbiddenException('仅坐席/管理员可查看派单回测')
+    }
+    const periodDays = this.dispatchDays(days)
+    const { agents, rows } = await this.loadDispatchData(periodDays)
+    const assignedIds = rows.filter((r) => r.assigneeId).map((r) => r.id)
+    const reassignEvents = assignedIds.length
+      ? await this.prisma.ticketComment.findMany({
+          where: {
+            kind: 'system',
+            content: { startsWith: TicketsService.REASSIGN_EVENT_PREFIX },
+            ticketId: { in: assignedIds },
+          },
+          select: { ticketId: true },
+        })
+      : []
+    return backtestDispatch(rows, agents, {
+      reassignTicketIds: new Set(reassignEvents.map((e) => e.ticketId)),
+      minEvidence: knobs.minEvidence,
+      decisionsLimit: knobs.decisionsLimit,
     })
   }
 
@@ -326,7 +456,11 @@ export class TicketsService {
           select: { name: true, email: true },
         })
         const label = assignee ? assignee.name || assignee.email : '未知用户'
-        events.push(ticket.assigneeId ? `转派给 ${label}` : `由 ${label} 受理`)
+        events.push(
+          ticket.assigneeId
+            ? `${TicketsService.REASSIGN_EVENT_PREFIX} ${label}`
+            : `由 ${label} 受理`,
+        )
       } else {
         events.push('受理人已移除')
       }
