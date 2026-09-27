@@ -74,6 +74,10 @@ model Message {
   createdAt        DateTime @default(now())
 
   @@index([feedback, feedbackAt])
+  // (chatId, createdAt)：历史加载按会话取再按时间排；更关键的是每日 token 预算那条 SUM ——
+  // 每个提问跑一次，条件是 chatId IN (该用户会话) AND createdAt >= 今日 0 点。
+  // 只有单列 chatId 索引时会把整个会话的消息全捞出来再筛时间窗，会话越长越贵
+  @@index([chatId, createdAt])
 }
 
 // 工单域：AI 无法自动解决时升级人工，构成服务台闭环
@@ -96,7 +100,12 @@ model Ticket {
 
   @@index([creatorId])
   @@index([assigneeId])
-  @@index([status])
+  // (status, updatedAt) 同时服务坐席列表的 ORDER BY status asc, updatedAt desc 与
+  // 「status IN (open, processing)」的积压分组；左前缀就是 status，
+  // 原单列 @@index([status]) 因此冗余，已一并去掉（少一个索引少一次写放大）
+  @@index([status, updatedAt])
+  // SLA 统计按 createdAt >= since 取区间，此前无索引即全表扫
+  @@index([createdAt])
   @@index([category])
   comments TicketComment[]
 }

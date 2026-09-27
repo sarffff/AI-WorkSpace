@@ -157,6 +157,18 @@ onApplicationShutdown`，放在后者里就已经晚了
       或正负例重叠时拒绝给数** —— 给出的是一个会被抄进 env 的数字，宁可以说"再去标几条"。
       期望文档没进 Top-K 的查询不计入分布：那是语料缺文档，不该由阈值背锅。
       脚本只读不写配置，改不改仍是人的决定
+- [x] **索引按查询形状补齐**：`Message(chatId, createdAt)` 服务每日 token 预算那条
+      每个提问跑一次的 SUM（只有单列 `chatId` 时会把整个会话的消息全捞出来再筛时间窗）；
+      `Ticket(createdAt)` 补上 SLA 区间的范围扫；`Ticket(status, updatedAt)` 服务坐席列表排序
+      与积压分组，并**删掉被它左前缀覆盖的冗余单列 `status` 索引**（少一个索引少一次写放大）。
+      刻意没加的：`Chat(userId, updatedAt)`（侧边栏列表，单用户几十条，走现有索引 + filesort
+      毫无压力，而 Chat 每个提问都被 touch 一次，加索引是纯写放大）和 `Chat(updatedAt)`
+      （只有 SLA 看板的一次 count 用到，同理不值）。
+      ⚠️ 这些是静态分析 + 查询形状推导出来的，**没有 EXPLAIN 实测数据**（本机 DB 访问在
+      这次会话里被安全策略拦下）。迁移待跑：`pnpm --filter @servicedesk/server exec prisma migrate deploy`
+- [ ] 未做：`GET /tickets` 的坐席视角是 `where: {}` + 全量 include 评论，没有分页 ——
+      索引只让它排序不那么贵，工单到几千条时它仍会先涨起来。加 LIMIT/游标会改到
+      SDK 契约与前端列表行为，属于要先定的产品决策，没有顺手改
 - [ ] Electron 打包发布：`electron-updater` 已在主进程接线（仅打包态检查更新），
       后端 API 地址支持 localStorage > `VITE_API_BASE_URL` > 默认值三级解析；
       仍缺更新源 (feed URL) 与签名产物，即「能打包」但「未可发布」
