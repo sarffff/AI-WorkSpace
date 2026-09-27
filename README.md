@@ -150,6 +150,13 @@ onApplicationShutdown`，放在后者里就已经晚了
       内容里任何形状的仿造标记（换 nonce、换大小写、多几条横线）都先被中性化掉。
       **这是边界卫生，不是抗注入修复** —— 模型仍然完整读得到那句话；
       真正的兜底是写操作过 HITL 确认门、以及行级权限决定检索得到什么
+- [x] **阈值定标工具 `eval:calibrate`**：把「`ragMinScore` 该放多少」从拍脑袋变成量出来的
+      数 + 摊开的代价。门开到 0、关掉精排逐条取稠密分（精排开着时最终分是 reranker 的
+      另一套刻度，拿它定前者没有意义），输出「阈值 → 正例召回 / 负例挡掉 / 平均注入片段数」
+      代价表；可分时建议值取分离区间中点而非踩边界。**样本太薄（正例 <5 或负例 <3）
+      或正负例重叠时拒绝给数** —— 给出的是一个会被抄进 env 的数字，宁可以说"再去标几条"。
+      期望文档没进 Top-K 的查询不计入分布：那是语料缺文档，不该由阈值背锅。
+      脚本只读不写配置，改不改仍是人的决定
 - [ ] Electron 打包发布：`electron-updater` 已在主进程接线（仅打包态检查更新），
       后端 API 地址支持 localStorage > `VITE_API_BASE_URL` > 默认值三级解析；
       仍缺更新源 (feed URL) 与签名产物，即「能打包」但「未可发布」
@@ -256,6 +263,7 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
 pnpm --filter @servicedesk/server eval:retrieval   # 检索命中率 / MRR（需真实 MySQL + 模型 Key）
 pnpm --filter @servicedesk/server eval:agent       # Agent 工具决策回归（无副作用入口）
 pnpm --filter @servicedesk/server eval:collect     # 把 👎 反馈连同当次工具轨迹导出为候选评测用例
+pnpm --filter @servicedesk/server eval:calibrate   # 在真实语料上量 ragMinScore：代价表 + 建议值（只读不写配置）
 pnpm --filter @servicedesk/server eval:record-corpus  # 重录离线评测语料与查询向量
 pnpm --filter @servicedesk/desktop test:e2e        # Electron 主链路冒烟（同源 mock 后端，无需 Key）
 ```
@@ -278,6 +286,11 @@ pnpm --filter @servicedesk/desktop test:e2e        # Electron 主链路冒烟（
 ⚠️ **已知缺陷（离线回归暴露，尚未调参）**：负例的最高稠密分 0.415 已越过线上默认
 阈值 `ragMinScore = 0.25`，即语义门对完全无关的问题拦不住；生产上看到的"负例不误召回"
 其实是 reranker 的终筛（`> 0.01`）在兜。一旦 rerank 未配置或调用失败回退，
-就会把无关文档当知识库依据引用出来。实测正负例分数区间是 0.620–0.824 vs 0.360–0.415，
-把阈值定在 0.45–0.6 之间可在不伤这批正例的前提下挡住负例 —— 但阈值该用真实语料定，
-不在合成语料上改默认值。
+就会把无关文档当知识库依据引用出来。实测正负例分数区间是 0.620–0.824 vs 0.360–0.415。
+
+阈值不该由代码替人拍，也不该在合成语料上定 —— 用 `pnpm eval:calibrate` 在**真实语料 +
+真实标注**上量：它把门开到 0、关掉精排逐条取稠密分，打出一张
+「阈值 → 正例召回 / 负例挡掉 / 平均注入片段数」的代价表，再给出建议值（正负例可分时取
+分离区间中点，而不是踩着某条观测值的边界）。样本太薄或正负例重叠时它**拒绝给数**并说明
+该补什么 —— 当前这份数据集只有 2 正 1 负，正好落在「不给数」那一侧，这是刻意的。
+脚本只读不写配置，认可后由人决定用 env 还是 Setting 表生效。

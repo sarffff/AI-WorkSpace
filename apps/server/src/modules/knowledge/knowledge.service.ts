@@ -461,15 +461,20 @@ export class KnowledgeService implements OnModuleInit {
     user: { id: string; role: string; department: string | null },
     query: string,
     topK?: number,
+    // 定标探针用：覆盖语义门阈值与是否精排。要观测的恰恰是被门挡掉的那部分分数分布，
+    // 用线上配置去跑只会看到「门后剩下什么」，量不出门该放在哪
+    opts: { minScore?: number; rerank?: boolean } = {},
   ): Promise<RagHit[]> {
     // 参数配置化：显式 topK > Setting 表 > 环境变量 > 默认
-    const [cfgTopK, minScore, coarseTopK, useRerank, useRewrite] = await Promise.all([
+    const [cfgTopK, cfgMinScore, coarseTopK, cfgRerank, useRewrite] = await Promise.all([
       this.settingInt(user.id, 'ragTopK', 4),
       this.settingNum(user.id, 'ragMinScore', 0.25),
       this.settingInt(user.id, 'ragCoarseTopK', 20),
       this.settingOn(user.id, 'ragRerank', true),
       this.settingOn(user.id, 'ragQueryRewrite', true),
     ])
+    const minScore = opts.minScore ?? cfgMinScore
+    const useRerank = opts.rerank ?? cfgRerank
     const finalTopK = Math.min(Math.max(topK ?? cfgTopK, 1), 10)
 
     // 查询改写：口语化提问 → 知识库风格检索语句（HyDE 简化版，仅降级检索词）
