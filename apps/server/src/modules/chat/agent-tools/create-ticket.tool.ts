@@ -125,13 +125,17 @@ export class CreateTicketTool implements AgentTool<typeof CreateTicketTool.schem
     draft: TicketDraftInput,
     chatId?: string,
   ): Promise<TicketRef> {
-    const ticket = await this.ticketsService.create(userId, {
-      title: draft.title,
-      content: draft.content,
-      priority: draft.priority,
-      category: draft.category,
-      source: 'agent',
-    })
+    const ticket = await this.ticketsService.create(
+      userId,
+      {
+        title: draft.title,
+        content: draft.content,
+        priority: draft.priority,
+        category: draft.category,
+      },
+      // 来源与归属会话走服务端内部参数：偏转率的分子依据，不接受客户端自报
+      { source: 'agent', chatId: chatId ?? null },
+    )
     // 长期记忆：工单记录跨会话可回溯（"上次的工单怎么样了"）
     await this.memoryService.remember(
       userId,

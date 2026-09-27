@@ -24,10 +24,9 @@ export class CreateTicketDto {
   @IsIn(TICKET_CATEGORIES, { message: '分类不合法' })
   category?: string
 
-  // 建单来源标记：agent = AI 对话中自动升级（内部调用），缺省 = 手动创建
-  @IsOptional()
-  @IsIn(['agent', 'manual'], { message: '来源不合法' })
-  source?: string
+  // 刻意不接受 source / chatId：这两个是「这单是 AI 升级的、来自哪次对话」，
+  // 是偏转率的分子与归属依据 —— 让客户端自报就等于允许任何人刷指标。
+  // 只有服务端内部调用（Agent 建单）能通过 create 的第三个参数写入。
 }
 
 // 更新工单（坐席/管理员：状态、优先级、受理人；创建者：仅可关闭自己的工单）

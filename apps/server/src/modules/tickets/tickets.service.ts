@@ -201,7 +201,17 @@ export class TicketsService {
     }
   }
 
-  async create(userId: string, dto: CreateTicketDto) {
+  /**
+   * @param internal 只给服务端内部调用（Agent 建单）用的字段：来源与归属会话。
+   *   刻意不放进 CreateTicketDto —— 那会让客户端能自报「我是 AI 升级的」并指定归属会话，
+   *   而这两个值正是偏转率的分子。
+   */
+  async create(
+    userId: string,
+    dto: CreateTicketDto,
+    internal: { source?: 'agent' | 'manual'; chatId?: string | null } = {},
+  ) {
+    const source = internal.source === 'agent' ? 'agent' : 'manual'
     const ticket = await this.prisma.ticket.create({
       data: {
         creatorId: userId,
@@ -209,7 +219,8 @@ export class TicketsService {
         content: dto.content,
         priority: dto.priority || 'normal',
         category: dto.category || 'other',
-        source: dto.source || 'manual',
+        source,
+        chatId: internal.chatId ?? null,
       },
       include: {
         creator: AUTHOR_BRIEF,
@@ -220,7 +231,7 @@ export class TicketsService {
     await this.addSystemEvent(
       ticket.id,
       userId,
-      dto.source === 'agent'
+      source === 'agent'
         ? 'AI 对话中自动升级创建工单'
         : `工单已创建（优先级：${PRIORITY_LABEL[ticket.priority]}）`,
     )

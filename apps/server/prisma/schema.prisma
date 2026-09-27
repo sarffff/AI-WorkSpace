@@ -95,11 +95,16 @@ model Ticket {
   assigneeId String?
   assignee   User?     @relation("TicketAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
   source     String    @default("manual") // manual 手动创建 | agent AI 对话升级（偏转率统计依据）
+  // 归属会话：AI 升级的工单是从哪次对话产生的。偏转率的分子要靠它，而 AgentRun 是观测
+  // 副作用（AGENT_TRACE=off 就不落），业务事实不该寄生在可关的开关上。
+  // 不建外键：会话可被用户删除，删掉会话不该抹掉工单的归属痕迹（统计要能追溯到历史）
+  chatId     String?
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
   @@index([creatorId])
   @@index([assigneeId])
+  @@index([chatId])
   // (status, updatedAt) 同时服务坐席列表的 ORDER BY status asc, updatedAt desc 与
   // 「status IN (open, processing)」的积压分组；左前缀就是 status，
   // 原单列 @@index([status]) 因此冗余，已一并去掉（少一个索引少一次写放大）

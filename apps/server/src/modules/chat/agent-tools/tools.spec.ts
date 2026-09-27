@@ -208,13 +208,12 @@ describe('CreateTicketTool', () => {
   it('无确认门时直接建单并写记忆', async () => {
     const { tool, tickets, memory } = build()
     const res = await tool.execute(args, ctx({ chatId: 'chat-1' }))
-    expect(tickets.create).toHaveBeenCalledWith('u1', {
-      title: '重置密码',
-      content: '账号 zhangsan',
-      priority: 'high',
-      category: 'account',
-      source: 'agent',
-    })
+    // 来源与归属会话走第三个内部参数：不接受客户端自报（偏转率的分子与归属依据）
+    expect(tickets.create).toHaveBeenCalledWith(
+      'u1',
+      { title: '重置密码', content: '账号 zhangsan', priority: 'high', category: 'account' },
+      { source: 'agent', chatId: 'chat-1' },
+    )
     expect(memory.remember).toHaveBeenCalledWith(
       'u1',
       'ticket',
@@ -230,6 +229,8 @@ describe('CreateTicketTool', () => {
     expect(tickets.create).toHaveBeenCalledWith(
       'u1',
       expect.objectContaining({ priority: 'normal', category: 'other' }),
+      // ctx() 无 chatId：归属留空，不能被写成空串（口径要能区分「未知」和「不属于任何会话」）
+      expect.objectContaining({ source: 'agent', chatId: null }),
     )
   })
 
@@ -273,13 +274,19 @@ describe('CreateTicketTool', () => {
 
   describe('createFromDraft', () => {
     it('建单成功后必定写一条 ticket 记忆（含单号前 8 位）', async () => {
-      const { tool, memory } = build()
+      const { tool, tickets, memory } = build()
       const ref = await tool.createFromDraft(
         'u9',
         { title: '重置密码', content: 'c', priority: 'low', category: 'account' },
         'chat-9',
       )
       expect(ref).toEqual({ id: 'TK-NEW-123456789', title: '重置密码' })
+      // 会话归属要落到工单行本身，不能只进长期记忆 —— 偏转率的分子按工单行数算
+      expect(tickets.create).toHaveBeenCalledWith(
+        'u9',
+        expect.objectContaining({ title: '重置密码' }),
+        { source: 'agent', chatId: 'chat-9' },
+      )
       expect(memory.remember).toHaveBeenCalledWith(
         'u9',
         'ticket',
