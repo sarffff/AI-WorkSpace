@@ -1,6 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useSelector } from 'react-redux'
-import type { KnowledgeDocument } from '@servicedesk/sdk'
+import type {
+  KnowledgeDocument,
+  KnowledgeGapCandidate,
+  KnowledgeGapsResult,
+} from '@servicedesk/sdk'
 import {
   Upload,
   Search,
@@ -17,6 +21,8 @@ import {
   File,
   CloudUpload,
   Users,
+  Sparkles,
+  Copy,
 } from 'lucide-react'
 
 import { api } from '@/shared/api/client'
@@ -106,6 +112,130 @@ const STAGE_LABEL: Record<string, string> = {
   failed: '失败',
 }
 
+const GAP_REASON_LABEL: Record<string, { label: string; tint: string }> = {
+  no_hit: { label: '库里没有', tint: 'text-rose-300 border-rose-500/25 bg-rose-500/10' },
+  hit_but_escalated: {
+    label: '有文档没答上',
+    tint: 'text-amber-300 border-amber-500/25 bg-amber-500/10',
+  },
+  unknown_hits: { label: '命中数未知', tint: 'text-t3 border-line bg-s4' },
+}
+
+/** 一条候选的展开态：处理结论 + 可复制的 Markdown 草稿 */
+const GapRow: React.FC<{ c: KnowledgeGapCandidate }> = ({ c }) => {
+  const [open, setOpen] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const reason = GAP_REASON_LABEL[c.reason] ?? GAP_REASON_LABEL.unknown_hits
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(c.markdown)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1600)
+    } catch {
+      // 剪贴板不可用（非安全上下文）时不假装成功
+      setCopied(false)
+    }
+  }
+
+  return (
+    <div className="border-t border-line first:border-t-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full text-left px-4 py-3 hover:bg-s4/60 transition-colors"
+      >
+        <div className="flex items-center gap-2 flex-wrap">
+          <span
+            className={`text-[9px] font-mono px-1.5 py-0.5 rounded border shrink-0 ${reason.tint}`}
+          >
+            {reason.label}
+          </span>
+          <span className="text-xs text-t1 truncate max-w-[420px]">{c.question}</span>
+          {!c.questionIsUserWords && (
+            <span className="text-[9px] font-mono text-t4">（AI 转述）</span>
+          )}
+          {!c.hasSolution && (
+            <span className="text-[9px] font-mono text-rose-300/80">（无人工结论，需回访）</span>
+          )}
+        </div>
+      </button>
+      {open && (
+        <div className="px-4 pb-4 space-y-3">
+          {c.hasSolution && (
+            <div>
+              <p className="text-[9px] font-mono text-t4 mb-1">处理结论</p>
+              <p className="text-xs text-t2 whitespace-pre-line leading-relaxed">{c.solution}</p>
+            </div>
+          )}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-[9px] font-mono text-t4">文档草稿</p>
+              <button
+                type="button"
+                onClick={copy}
+                className="flex items-center gap-1 text-[10px] font-mono text-t3 hover:text-brand transition-colors"
+              >
+                <Copy className="w-3 h-3" />
+                {copied ? '已复制' : '复制 Markdown'}
+              </button>
+            </div>
+            <pre className="p-3 rounded-lg bg-s0 border border-line text-[10px] font-mono text-t3 leading-relaxed whitespace-pre-wrap max-h-56 overflow-y-auto">
+              {c.markdown}
+            </pre>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const GapPanel: React.FC<{ data: KnowledgeGapsResult }> = ({ data }) => {
+  const { summary } = data
+  return (
+    <div className="rise-in rounded-xl panel overflow-hidden">
+      <div className="px-4 py-3 border-b border-line flex items-start justify-between gap-4">
+        <div className="flex items-center gap-2">
+          <Sparkles className="w-4 h-4 text-brand" />
+          <div>
+            <p className="text-xs font-semibold text-t1">知识缺口候选</p>
+            <p className="text-[10px] font-mono text-t4 mt-0.5">
+              AI 升级、人工已解决的问题 —— 补进知识库下次就能自动答
+            </p>
+          </div>
+        </div>
+        <div className="text-right shrink-0">
+          <p className="font-display text-xl font-bold text-brand">{summary.total}</p>
+          <p className="text-[9px] font-mono text-t4">{summary.withSolution} 条有现成结论</p>
+        </div>
+      </div>
+
+      {summary.recurring.length > 0 && (
+        <div className="px-4 py-2.5 bg-s4/50 border-b border-line">
+          <p className="text-[9px] font-mono text-t4 mb-1">反复出现的求助（补一篇省多次升级）</p>
+          {summary.recurring.slice(0, 3).map((r) => (
+            <p key={r.question} className="text-[10px] font-mono text-t3 truncate">
+              ×{r.times} · {r.question}
+            </p>
+          ))}
+        </div>
+      )}
+
+      <div>
+        {data.candidates.map((c) => (
+          <GapRow key={c.ticketId} c={c} />
+        ))}
+      </div>
+
+      {data.unlinkedResolvedTickets > 0 && (
+        <p className="px-4 py-2.5 text-[9px] font-mono text-t4 border-t border-line">
+          另有 {data.unlinkedResolvedTickets} 张已解决的 AI 工单追不到会话归属，未列入本清单。
+        </p>
+      )}
+    </div>
+  )
+}
+
 export const KnowledgePage: React.FC = () => {
   const user = useSelector((s: RootState) => s.auth.user)
   const isAdmin = user?.role === 'admin'
@@ -129,6 +259,26 @@ export const KnowledgePage: React.FC = () => {
   useEffect(() => {
     refresh()
   }, [])
+
+  // 知识缺口只对有工单读取权的角色开放（服务端同样会拒，这里只是不发无谓的请求）
+  const isStaff = user?.role === 'admin' || user?.role === 'agent'
+  const [gaps, setGaps] = useState<KnowledgeGapsResult | null>(null)
+  useEffect(() => {
+    if (!isStaff) return
+    let cancelled = false
+    api
+      .getKnowledgeGaps()
+      .then((g) => {
+        if (!cancelled) setGaps(g)
+      })
+      .catch(() => {
+        // 缺口清单是辅助面板，拿不到不该影响文档列表的展示
+        if (!cancelled) setGaps(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isStaff])
 
   // 存在处理中的文档时轮询刷新（进度条实时更新，全部完成后自动停止）
   const hasProcessing = documents.some((d) => d.status === 'processing')
@@ -284,6 +434,9 @@ export const KnowledgePage: React.FC = () => {
             </div>
           ))}
         </div>
+
+        {/* 知识缺口：AI 升级掉、人工解决了的问题 —— 补一篇就少一类升级 */}
+        {gaps && gaps.summary.total > 0 && <GapPanel data={gaps} />}
 
         {/* 文档列表（支持拖拽上传） */}
         <div

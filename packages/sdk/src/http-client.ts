@@ -2,6 +2,7 @@ import type {
   CompletionRequest,
   CompletionResponse,
   KnowledgeDocument,
+  KnowledgeGapsResult,
   MessageSource,
   PromptItem,
   TicketItem,
@@ -238,6 +239,13 @@ export class HttpClient {
   // 获取知识库文档列表
   async getDocuments(): Promise<KnowledgeDocument[]> {
     return this.request<KnowledgeDocument[]>('/knowledge/documents')
+  }
+
+  // 知识缺口候选：AI 升级掉、人工解决了的问题 → 待补文档草稿（仅坐席/管理员）
+  async getKnowledgeGaps(days = 30, limit = 50): Promise<KnowledgeGapsResult> {
+    return this.request<KnowledgeGapsResult>(
+      `/knowledge/gap-candidates?days=${days}&limit=${limit}`,
+    )
   }
 
   // 上传文档到知识库（自动切块 + 向量化；department 非空 = 共享至本部门）

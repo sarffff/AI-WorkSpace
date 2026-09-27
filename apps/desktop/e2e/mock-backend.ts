@@ -78,6 +78,44 @@ const ANALYTICS_OVERVIEW = {
   },
 }
 
+// 知识缺口候选：一条有结论可成文、一条无人工结论需回访，覆盖面板的两种行
+const KNOWLEDGE_GAPS = {
+  days: 30,
+  scanned: 2,
+  unlinkedResolvedTickets: 3,
+  summary: {
+    total: 2,
+    withSolution: 1,
+    byReason: { no_hit: 1, hit_but_escalated: 1, unknown_hits: 0 },
+    recurring: [{ question: '打印机脱机了怎么恢复', times: 2, ticketIds: ['t-gap-1', 't-gap-2'] }],
+  },
+  candidates: [
+    {
+      ticketId: 't-gap-1',
+      chatId: 'chat-gap-1',
+      category: 'hardware',
+      reason: 'no_hit',
+      question: '打印机脱机了怎么恢复',
+      questionIsUserWords: true,
+      solution: '更换打印服务器后需在设置里重新指定端口',
+      hasSolution: true,
+      markdown:
+        '# 打印机脱机了怎么恢复\n\n分类：hardware\n\n## 处理结论\n\n更换打印服务器后需在设置里重新指定端口',
+    },
+    {
+      ticketId: 't-gap-2',
+      chatId: 'chat-gap-2',
+      category: 'account',
+      reason: 'hit_but_escalated',
+      question: '域账号被锁定了帮我看看',
+      questionIsUserWords: false,
+      solution: '',
+      hasSolution: false,
+      markdown: '# 域账号被锁定了帮我看看\n\n分类：account\n\n## 处理结论\n\n_（无）_',
+    },
+  ],
+}
+
 // 口径与服务端 analytics/deflection.ts 一致：12 个接住的会话里 3 个升级、
 // 2 个未升级但被打了 👎、1 个只提问没回答、1 张老工单追不回会话
 const DEFLECTION = {
@@ -327,6 +365,13 @@ export async function startMockBackend(): Promise<MockBackend> {
     }
     if (method === 'GET' && path === '/auth/me') {
       return json(res, 200, sessionUser())
+    }
+    // ===== 知识库页 =====
+    if (method === 'GET' && path === '/knowledge/documents') {
+      return json(res, 200, [])
+    }
+    if (method === 'GET' && path === '/knowledge/gap-candidates') {
+      return json(res, 200, KNOWLEDGE_GAPS)
     }
     // ===== 运营看板（staffOnly：只有坐席/管理员进得去这块页面） =====
     if (method === 'GET' && path === '/analytics/overview') {

@@ -5,6 +5,7 @@ import {
   Get,
   Param,
   Post,
+  Query,
   UseGuards,
   UseInterceptors,
   UseFilters,
@@ -26,6 +27,18 @@ export class KnowledgeController {
   @Get('documents')
   async getDocuments(@CurrentUser() user: SafeUser) {
     return await this.knowledgeService.getDocuments(user)
+  }
+
+  // 知识缺口候选：AI 升级掉、人工解决了的问题 → 待补文档草稿（仅坐席/管理员）
+  @Get('gap-candidates')
+  async getGapCandidates(
+    @CurrentUser() user: SafeUser,
+    @Query('days') days?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const d = Math.min(Math.max(parseInt(days || '30', 10) || 30, 1), 90)
+    const l = Math.min(Math.max(parseInt(limit || '50', 10) || 50, 1), 200)
+    return this.knowledgeService.getGapCandidates(user, d, l)
   }
 
   // 上传文档（multipart：file + 可选 department 共享标记）→ 落库 + 入队后台索引

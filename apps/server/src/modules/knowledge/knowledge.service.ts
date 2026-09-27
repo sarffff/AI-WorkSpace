@@ -1,6 +1,7 @@
 import {
   Injectable,
   BadRequestException,
+  ForbiddenException,
   NotFoundException,
   Logger,
   OnModuleInit,
@@ -14,6 +15,7 @@ import { PrismaService } from '@/prisma/prisma.service'
 import { SettingsService } from '@/modules/settings/settings.service'
 import { LlmClient } from '@/common/llm-client'
 import { EmbeddingsClient } from '@/common/embeddings'
+import { extractGapCandidates, summarizeGaps } from './knowledge-gap'
 import { IndexingQueueService } from './indexing-queue.service'
 import { UploadPayloadStore } from './upload-payload.store'
 import { chunkDocument, ChunkConfig } from './chunking'
@@ -689,11 +691,108 @@ export class KnowledgeService implements OnModuleInit {
         try {
           text = new TextDecoder('gbk').decode(file.buffer)
         } catch {
-          // 当前运行时无 GBK 支持时保留原结果（由 detectMojibake 告警）
+          // 无 gbk decoder（非 Node 环境）时保留原样
         }
       }
       return text
     }
-    throw new BadRequestException(`不支持的文件类型: .${ext || 'unknown'}`)
+    return file.buffer.toString('utf8')
+  }
+
+  // ===== 知识回流：AI 接不住、人工解决了的问题 = 文档缺口 =====
+
+  /**
+   * 待补文档候选清单。仅坐席/管理员 —— 内容含工单原文与处理结论，不是全员可见的信息。
+   *
+   * 判定与草稿生成都住在 knowledge-gap.ts（纯函数，14 个用例钉着）；这里只把
+   * Ticket / Message / AgentRun 三张表拼成它要的输入，不掺任何判断逻辑。
+   */
+  async getGapCandidates(user: { role: string }, days = 30, limit = 50) {
+    if (user.role !== 'agent' && user.role !== 'admin') {
+      throw new ForbiddenException('仅坐席/管理员可查看知识缺口清单')
+    }
+    const since = new Date(Date.now() - days * 86_400_000)
+    const capped = Math.min(Math.max(Math.round(limit) || 50, 1), 200)
+
+    const tickets = await this.prisma.ticket.findMany({
+      where: {
+        source: 'agent',
+        chatId: { not: null },
+        status: { in: ['resolved', 'closed'] },
+        createdAt: { gte: since },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: capped,
+      // kind='comment' 才是人工留言；系统事件（受理、状态流转）不是处理结论
+      include: {
+        comments: {
+          where: { kind: 'comment' },
+          orderBy: { createdAt: 'asc' },
+          select: { content: true },
+        },
+      },
+    })
+    const chatIds = [...new Set(tickets.map((t) => t.chatId).filter((c): c is string => !!c))]
+    const ticketIds = tickets.map((t) => t.id)
+
+    const [userMsgs, runs, unlinked] = await Promise.all([
+      chatIds.length
+        ? this.prisma.message.findMany({
+            where: { chatId: { in: chatIds }, role: 'user' },
+            orderBy: { createdAt: 'asc' },
+            select: { chatId: true, content: true },
+          })
+        : Promise.resolve([]),
+      ticketIds.length
+        ? this.prisma.agentRun.findMany({
+            where: { ticketId: { in: ticketIds } },
+            orderBy: { createdAt: 'asc' },
+            select: { ticketId: true, sources: true },
+          })
+        : Promise.resolve([]),
+      // 追不到会话的已解决 AI 工单：清单可能不完整，这个数要摆在台面上
+      this.prisma.ticket.count({
+        where: {
+          source: 'agent',
+          chatId: null,
+          status: { in: ['resolved', 'closed'] },
+          createdAt: { gte: since },
+        },
+      }),
+    ])
+
+    // 同一工单可能有多条运行（反思轮各落一条时取最后一次的命中数）
+    const hitsByTicket = new Map<string, number>()
+    for (const r of runs) {
+      if (r.ticketId) hitsByTicket.set(r.ticketId, r.sources)
+    }
+    const questionsByChat = new Map<string, string[]>()
+    for (const m of userMsgs) {
+      questionsByChat.set(m.chatId, [...(questionsByChat.get(m.chatId) ?? []), m.content])
+    }
+
+    const candidates = extractGapCandidates(
+      tickets.map((t) => ({
+        id: t.id,
+        title: t.title,
+        content: t.content,
+        category: t.category,
+        chatId: t.chatId,
+        status: t.status,
+        createdAt: t.createdAt,
+        humanComments: t.comments.map((c) => c.content),
+        userQuestions: questionsByChat.get(t.chatId ?? '') ?? [],
+        ragHits: t.id ? (hitsByTicket.get(t.id) ?? null) : null,
+      })),
+    )
+
+    return {
+      days,
+      scanned: tickets.length,
+      // 观测/归属追不全时不说"没有缺口"，说"这条拿不到"
+      unlinkedResolvedTickets: unlinked,
+      summary: summarizeGaps(candidates),
+      candidates,
+    }
   }
 }

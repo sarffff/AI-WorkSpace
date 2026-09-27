@@ -218,3 +218,39 @@ test('运营看板的偏转率面板真的渲染出来（数字、缺口、口�
   await expect(panel.getByText(/追不回会话归属/)).toBeVisible()
   expect(backend.requestLog).toContain('GET /analytics/deflection')
 })
+
+test('知识库页的知识缺口候选：能看懂、能展开拿草稿', async () => {
+  backend.setRole('agent')
+  await boot()
+
+  await win.getByRole('button', { name: /知识库/ }).click()
+
+  const panel = win.locator('div.rounded-xl', { has: win.getByText('知识缺口候选') })
+  await expect(panel).toHaveCount(1)
+  await expect(panel.getByText('2', { exact: true }).first()).toBeVisible()
+  await expect(panel.getByText('1 条有现成结论')).toBeVisible()
+
+  // 两种缺口类型要分得开：库里没有 vs 有文档没答上
+  await expect(panel.getByText('库里没有', { exact: true })).toBeVisible()
+  await expect(panel.getByText('有文档没答上', { exact: true })).toBeVisible()
+  // 转述与无人工结论都要显式标出来，不然会被当成用户原话抄进文档
+  await expect(panel.getByText('（AI 转述）')).toBeVisible()
+  await expect(panel.getByText(/无人工结论/)).toBeVisible()
+
+  // 反复出现的求助排在面板顶部
+  await expect(panel.getByText('反复出现的求助（补一篇省多次升级）')).toBeVisible()
+  await expect(panel.getByText('×2 · 打印机脱机了怎么恢复')).toBeVisible()
+
+  // 展开一条候选 → 拿到可粘贴的草稿
+  await panel.getByRole('button', { name: /打印机脱机了怎么恢复/ }).click()
+  // exact：同一段文字也在下面的 Markdown 草稿里出现（草稿是结论的超集）
+  await expect(
+    panel.getByText('更换打印服务器后需在设置里重新指定端口', { exact: true }),
+  ).toBeVisible()
+  await expect(panel.getByText('# 打印机脱机了怎么恢复')).toBeVisible()
+  await expect(panel.getByRole('button', { name: /复制 Markdown/ })).toBeVisible()
+
+  // 清单不完整的诚实脚注
+  await expect(panel.getByText(/另有 3 张已解决的 AI 工单追不到会话归属/)).toBeVisible()
+  expect(backend.requestLog).toContain('GET /knowledge/gap-candidates')
+})

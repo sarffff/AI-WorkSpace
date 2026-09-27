@@ -371,6 +371,41 @@ export interface DeflectionOverview {
   knowledgeGaps: KnowledgeGapItem[]
 }
 
+/** 缺口类型：库里根本没有 / 有文档但没答上 / 追不到那次运行的命中数 */
+export type KnowledgeGapReason = 'no_hit' | 'hit_but_escalated' | 'unknown_hits'
+
+/** 一条待补文档候选：问题 + 人工处理结论 + 可直接粘贴的 Markdown 草稿 */
+export interface KnowledgeGapCandidate {
+  ticketId: string
+  chatId: string
+  category: TicketCategory | string
+  reason: KnowledgeGapReason
+  question: string
+  /** false = 用户原话没留存，question 只是 AI 建单时的转述 */
+  questionIsUserWords: boolean
+  solution: string
+  hasSolution: boolean
+  markdown: string
+}
+
+export interface KnowledgeGapSummary {
+  total: number
+  /** 有处理结论、能直接成文的条数 */
+  withSolution: number
+  byReason: Record<KnowledgeGapReason, number>
+  /** 同一句用户原话重复出现：补一篇省多次升级 */
+  recurring: { question: string; times: number; ticketIds: string[] }[]
+}
+
+export interface KnowledgeGapsResult {
+  days: number
+  scanned: number
+  /** 已解决但追不回会话归属的 AI 工单数 —— 清单可能比这个数不全 */
+  unlinkedResolvedTickets: number
+  summary: KnowledgeGapSummary
+  candidates: KnowledgeGapCandidate[]
+}
+
 /** 运行明细列表项（轻量，不含 steps） */
 export interface AgentRunItem {
   id: string
