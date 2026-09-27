@@ -153,6 +153,9 @@ export class ChatController {
     res.on('close', cancel)
 
     try {
+      // 停机时要靠这张表把在途流收回来（SSE 不会自己结束，否则进程排空不掉）；
+      // 注册放在 try 内，与 finally 的注销成对，中途抛错不会留下悬空回调
+      this.slots.registerCancel(id, cancel)
       await this.chatService.assertOwned(userId, id)
       // reqId 由 LoggingInterceptor 写在响应头上，这里显式取出来传给运行层：
       // 一次提问会打出多条日志（工具执行、确认、汇总）并落一条 AgentRun，
@@ -198,6 +201,7 @@ export class ChatController {
     } finally {
       res.end()
       // 正常结束、断连、抛错三条路径都经过这里，槽位与会话占用不会泄漏
+      this.slots.unregisterCancel(id)
       this.slots.release(userId)
       this.slots.releaseChat(id)
     }

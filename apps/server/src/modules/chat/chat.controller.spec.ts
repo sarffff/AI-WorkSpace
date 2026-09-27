@@ -144,6 +144,8 @@ describe('ChatController 流式端点的并发上限', () => {
     const a = fakeRes()
     await controller.streamCompletions('u1', 'c1', { prompt: 'q' }, a.res as never)
     expect(slots.activeCount('u1')).toBe(0)
+    // 停机登记同样要注销，否则表随会话数无界增长
+    expect(slots.inFlight()).toBe(0)
 
     const b = fakeRes()
     await controller.streamCompletions('u1', 'c1', { prompt: 'q' }, b.res as never)
@@ -330,5 +332,36 @@ describe('ChatController 断连取消', () => {
     const ok = fakeRes()
     await controller.streamCompletions('u1', 'c1', { prompt: 'q' }, ok.res as never)
     expect(ok.state.written.some((w) => w.includes('"done":true'))).toBe(true)
+  })
+
+  it('停机时在途流被取消：走与断连同一条收尾，登记与槽位都归还', async () => {
+    const { controller, slots, streamOpts } = makeController({
+      streams: (_id, signal) =>
+        (async function* () {
+          yield { type: 'content', text: '半' } as never
+          // 在途的生成调用：只有取消信号能把它收回来
+          await new Promise<never>((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(new Error('shutting down')), {
+              once: true,
+            })
+          })
+        })(),
+    })
+
+    const r = fakeRes()
+    const running = controller.streamCompletions('u1', 'c1', { prompt: 'q' }, r.res as never)
+    await new Promise((res) => setImmediate(res))
+    expect(slots.inFlight()).toBe(1)
+
+    await slots.beforeApplicationShutdown()
+    await running
+
+    expect(streamOpts[0]?.signal?.aborted).toBe(true)
+    expect(slots.inFlight()).toBe(0)
+    expect(slots.activeCount('u1')).toBe(0)
+    expect(slots.chatHolder('c1')).toBeUndefined()
+    expect(r.state.ended).toBe(true)
+    // 停机不是「回答出错」：连接已关，不该再往里写帧
+    expect(r.state.written.some((w) => w.includes('"error"'))).toBe(false)
   })
 })

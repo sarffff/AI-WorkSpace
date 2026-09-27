@@ -135,6 +135,13 @@ AI-Workspace/
       流式与非流式旁路都过闸门。客户端据此区分「拒绝」与「链路故障」：
       预算/并发/会话忙不再触发无谓的非流式回退（此前回退只会再被拒一次，
       并把真实原因盖成「无法连接到服务器」，还贴上误导的「降级回答」标记）
+- [x] **停机排空在途流**：SSE 是「永不自己结束」的响应，`server.close()` 会一直等它排空 ——
+      发版或容器停止时要么卡到被 SIGKILL（半成品回答与 `AgentRun` 轨迹一起丢），
+      要么靠运维强杀。现在每条流注册自己的收尾回调，停机时逐个取消，
+      走的正是客户端断连那条路径（掐掉在途请求 → 保存半成品 → 落 partial 轨迹）。
+      钩子必须是 `beforeApplicationShutdown`：Nest 的 `close()` 顺序是
+      `onModuleDestroy → beforeApplicationShutdown → dispose()（关 HTTP 服务器）→
+  onApplicationShutdown`，放在后者里就已经晚了
 - [ ] Electron 打包发布：`electron-updater` 已在主进程接线（仅打包态检查更新），
       后端 API 地址支持 localStorage > `VITE_API_BASE_URL` > 默认值三级解析；
       仍缺更新源 (feed URL) 与签名产物，即「能打包」但「未可发布」

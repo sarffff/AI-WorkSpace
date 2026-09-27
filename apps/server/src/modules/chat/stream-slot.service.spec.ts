@@ -91,3 +91,56 @@ describe('StreamSlotService 同会话互斥', () => {
     expect(slots.activeCount('u1')).toBe(0)
   })
 })
+
+// SSE 是「永不自己结束」的响应：停机时没人取消它，进程就排空不掉。
+describe('StreamSlotService 停机排空', () => {
+  it('beforeApplicationShutdown 取消全部在途流并清空登记', async () => {
+    const slots = make()
+    const cancelled: string[] = []
+    slots.registerCancel('c1', () => cancelled.push('c1'))
+    slots.registerCancel('c2', () => cancelled.push('c2'))
+    expect(slots.inFlight()).toBe(2)
+
+    await slots.beforeApplicationShutdown()
+
+    expect(cancelled.sort()).toEqual(['c1', 'c2'])
+    expect(slots.inFlight()).toBe(0)
+  })
+
+  it('注销后不再被取消：正常结束的流不该留下悬空回调', async () => {
+    const slots = make()
+    let fired = 0
+    slots.registerCancel('c1', () => fired++)
+    slots.unregisterCancel('c1')
+    expect(slots.inFlight()).toBe(0)
+
+    await slots.beforeApplicationShutdown()
+    expect(fired).toBe(0)
+  })
+
+  it('单条流收尾抛错不拖住整个进程退出', async () => {
+    const slots = make()
+    let second = 0
+    slots.registerCancel('c1', () => {
+      throw new Error('收尾失败')
+    })
+    slots.registerCancel('c2', () => second++)
+
+    await expect(slots.beforeApplicationShutdown()).resolves.toBeUndefined()
+    expect(second).toBe(1)
+    expect(slots.inFlight()).toBe(0)
+  })
+
+  it('无在途流时直接返回', async () => {
+    await expect(make().beforeApplicationShutdown()).resolves.toBeUndefined()
+  })
+
+  it('方法名必须是 beforeApplicationShutdown：拼错了 Nest 根本不会调用它', async () => {
+    // 框架靠 isFunction(instance.beforeApplicationShutdown) 发现钩子（见 @nestjs/core
+    // hooks/before-app-shutdown.hook.js）。改名或写成 onApplicationShutdown 都会静默失效 ——
+    // 而 onApplicationShutdown 更是在 dispose() 之后才跑，那时连接已经卡住了
+    const slots = make()
+    expect(typeof slots.beforeApplicationShutdown).toBe('function')
+    expect((slots as unknown as Record<string, unknown>).onApplicationShutdown).toBeUndefined()
+  })
+})

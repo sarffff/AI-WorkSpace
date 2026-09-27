@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common'
+import { Injectable, Logger, type BeforeApplicationShutdown } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 
 // ===== 每用户并发对话流上限 =====
@@ -16,8 +16,9 @@ import { ConfigService } from '@nestjs/config'
 export const DEFAULT_MAX_CONCURRENT_STREAMS = 2
 
 @Injectable()
-export class StreamSlotService {
+export class StreamSlotService implements BeforeApplicationShutdown {
   private readonly active = new Map<string, number>()
+  private readonly logger = new Logger(StreamSlotService.name)
 
   constructor(private readonly config: ConfigService) {}
 
@@ -71,5 +72,49 @@ export class StreamSlotService {
 
   chatHolder(chatId: string): string | undefined {
     return this.chatClaims.get(chatId)
+  }
+
+  // ===== 停机时把在途流收回来 =====
+  //
+  // SSE 是「永不自己结束」的响应：SIGTERM 后 HTTP 服务器的 close 会一直等它排空，
+  // 于是发版/重启要么卡到被 SIGKILL（半成品回答与 AgentRun 轨迹一起丢），
+  // 要么靠运维手动强杀。这里注册每条流的收尾回调，停机时逐个取消 ——
+  // 走的正是客户端断连那条路径：掐掉在途请求、保存半成品、落 partial 轨迹。
+  //
+  // 钩子必须用 beforeApplicationShutdown：Nest 的 close() 顺序是
+  // onModuleDestroy → beforeApplicationShutdown → dispose()（关 HTTP 服务器）→
+  // onApplicationShutdown。放在 onApplicationShutdown 里就晚了一步 ——
+  // 那时 dispose() 已经卡在排空连接上，回调根本没机会跑。
+
+  private readonly cancelling = new Map<string, () => void>()
+
+  registerCancel(chatId: string, cancel: () => void): void {
+    this.cancelling.set(chatId, cancel)
+  }
+
+  unregisterCancel(chatId: string): void {
+    this.cancelling.delete(chatId)
+  }
+
+  /** 在途流数（跨用户合计）：也是停机排空要等的东西 */
+  inFlight(): number {
+    return this.cancelling.size
+  }
+
+  async beforeApplicationShutdown(): Promise<void> {
+    const draining = this.cancelling.size
+    if (!draining) return
+    this.logger.log(`shutting down: cancelling ${draining} in-flight stream(s)`)
+    for (const [chatId, cancel] of [...this.cancelling]) {
+      // 单条流的收尾出错不该拖住整个进程退出
+      try {
+        cancel()
+      } catch (err) {
+        this.logger.warn(
+          `cancel stream on shutdown failed: chat=${chatId}, ${err instanceof Error ? err.message : 'unknown'}`,
+        )
+      }
+    }
+    this.cancelling.clear()
   }
 }
