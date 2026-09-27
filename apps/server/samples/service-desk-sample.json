@@ -1,0 +1,58 @@
+{
+  "docs": [
+    {
+      "file": "vpn-connection-troubleshooting.md",
+      "ownerEmail": "dev1@servicedeck.cn",
+      "shareToDepartment": true
+    },
+    {
+      "file": "account-lock-reset.md",
+      "ownerEmail": "dev1@servicedeck.cn",
+      "shareToDepartment": true
+    }
+  ],
+  "reclassify": [
+    {
+      "titleContains": "VPN",
+      "category": "network",
+      "why": "描述的是在家连不上公司 VPN，属网络访问而非其他"
+    },
+    {
+      "titleContains": "账号被锁定",
+      "category": "account",
+      "why": "账号锁定与重置属账号权限"
+    }
+  ],
+  "escalations": [
+    {
+      "email": "dev1@servicedeck.cn",
+      "ask": "公司 VPN 怎么连？我在新电脑上装好了客户端",
+      "expect": "answer",
+      "note": "知识库应能接住：首次连接的三步流程就在文档里"
+    },
+    {
+      "email": "dev1@servicedeck.cn",
+      "ask": "我的账号被锁定了，自助解锁能试吗？会不会影响邮箱和 VPN",
+      "expect": "answer",
+      "note": "文档写明锁定期间三系统同时失败，属同一故障"
+    },
+    {
+      "email": "dev1@servicedeck.cn",
+      "ask": "VPN 一直报 8004，客户端重装了两次还是不行，在家连不上内网",
+      "expect": "escalate",
+      "note": "文档明确写了 8004 重装无效属客户端之外故障，要建单给网络组 —— 这是「命中了却仍升级」的样本"
+    },
+    {
+      "email": "dev1@servicedeck.cn",
+      "ask": "笔记本屏幕右下角裂了，走什么流程报修或者换新？要不要自己垫钱",
+      "expect": "escalate",
+      "note": "硬件报修与费用归属库里一个字都没有 —— 「根本没有文档」的样本"
+    },
+    {
+      "email": "hr1@servicedesk.cn",
+      "ask": "这个月报销的纸质发票我弄丢了，还能补吗？要走哪位审批",
+      "expect": "escalate",
+      "note": "人事部没有任何共享文档，制度流程类问题必然空手而归"
+    }
+  ]
+}

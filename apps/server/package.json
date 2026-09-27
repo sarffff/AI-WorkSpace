@@ -13,7 +13,8 @@
     "eval:collect": "nest build && node dist/src/scripts/eval-collect.js",
     "eval:record-corpus": "nest build && node dist/src/scripts/eval-record-corpus.js",
     "eval:calibrate": "nest build && node dist/src/scripts/eval-calibrate.js",
-    "metrics:report": "nest build && node dist/src/scripts/metrics-report.js"
+    "metrics:report": "nest build && node dist/src/scripts/metrics-report.js",
+    "sample:run": "nest build && node dist/src/scripts/service-desk-sample.js"
   },
   "dependencies": {
     "@langchain/openai": "^1.5.6",

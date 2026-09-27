@@ -212,6 +212,20 @@ onApplicationShutdown`，放在后者里就已经晚了
       天花板 100%（两张单都被同一个人接走）。结论行由门槛把关：已派过人的单不足 20 张就判
       "任何命中率都是噪声"。所以下一件该做的事是让真实求助流进来（至少把那 2 张的分类改对），
       而不是继续加算法
+- [x] **样本脚手架 `pnpm sample:run`**（`SAMPLE_STAGE=audit|docs|reclassify|escalate`）：指标没有样本
+      就等于没做，所以把"让演示库长出可评测的样本"做成脚本，而不是手改数据库。三个写阶段都走
+      service 方法，不走裸 SQL —— 分类纠正走 `TicketsService.update`（时间线里留下「分类由「其他」
+      调整为「网络访问」」，读路径才检验得了这次改动），文档走 `uploadDocument`（真切块+向量），
+      升级走 `startStream` + `resolveConfirm`（SSE 那条真路径，产出的工单才带 `source='agent'` 与会话归属）。
+      样本清单住在 `samples/service-desk-sample.json`，文档正文住在 `samples/docs/`，按标题片段定位工单
+      而不是写死 UUID。**`escalate` 阶段要 `SAMPLE_YES=1` 显式确认**：它是唯一花钱、也是唯一往业务表
+      写工单的动作，不该被"顺手跑个脚本"触发。
+      已实跑（2026-09-27）：`docs` 补了 2 篇技术部共享文档（VPN 排障 2 块、账号锁定 1 块，真 embedding）；
+      `reclassify` 把原来两张 `other` 单改成 `network` / `account`。回测里 `unroutable` 从 2 降到 0、
+      `no_signal` 变成 2 —— 分类这一维终于"可路由但还没经验"。
+      ⚠️ 顺带查出来的一个真实配置事实：原有 3 篇文档全是 admin 私有（`department` 为空），
+      而检索可见性按「本人 或 同部门」过滤 —— **员工视角的知识库其实是空的**，
+      任何员工提问都必然走成"检索零命中"。这不是代码 bug，是内容归属问题
 - [ ] Electron 打包发布：`electron-updater` 已在主进程接线（仅打包态检查更新），
       后端 API 地址支持 localStorage > `VITE_API_BASE_URL` > 默认值三级解析；
       仍缺更新源 (feed URL) 与签名产物，即「能打包」但「未可发布」
