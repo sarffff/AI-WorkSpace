@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common'
 import { ChatController } from './chat.controller'
 import { ChatService } from './chat.service'
 import { StreamSlotService } from './stream-slot.service'
+import { StreamSessionService } from './stream-session.service'
+import { ChatAttachmentStore } from './chat-attachment.store'
 import { AgentPersonaService } from './agent-persona.service'
 import { AgentPersonaController } from './agent-persona.controller'
 import { KnowledgeModule } from '../knowledge/knowledge.module'
@@ -19,6 +21,8 @@ import { AGENT_TOOL_PROVIDERS } from './agent-tools'
   providers: [
     ChatService,
     StreamSlotService,
+    StreamSessionService,
+    ChatAttachmentStore,
     AgentPersonaService,
     LlmClient,
     ...AGENT_TOOL_PROVIDERS,

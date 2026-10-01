@@ -77,6 +77,8 @@ export interface Message {
   ticketRef?: TicketRef | null
   feedback?: MessageFeedback | null
   feedbackReason?: MessageFeedbackReason | null
+  /** 本轮对话附件（仅 user 消息）：展示芯片与下载入口 */
+  attachments?: ChatAttachmentBrief[]
   /**
    * SSE 中断后走非流式回退得到的回答：仍做 RAG，但不跑工具循环，
    * 因此不会自动升级工单。展示时需明确标注，避免用户以为拿到了有升级保障的回答。
@@ -198,7 +200,7 @@ export interface TicketCategoryStats {
 /** 坐席看板统计（仅坐席/管理员） */
 export interface TicketStats {
   periodDays: number
-  /** 期间内活跃会话数（偏转率分母） */
+  /** 期间内活跃会话数（工单量的背景，不是偏转率分母 —— 偏转率只看 DeflectionOverview） */
   sessions: number
   tickets: {
     total: number
@@ -212,8 +214,6 @@ export interface TicketStats {
   }
   /** 当前未完结存量（待处理+处理中） */
   backlog: number
-  /** 偏转率 0-1（AI 未升级占比，无会话时为 null） */
-  deflectRate: number | null
   sla: {
     met: number
     total: number
@@ -244,6 +244,20 @@ export interface CompletionRequest {
   useRag?: boolean
   /** 注入的 system 角色提示词（来自提示词广场「一键注入」） */
   systemPrompt?: string
+  /** 本轮对话附件 id（正文截断注入上下文，元数据随用户消息落库） */
+  attachments?: string[]
+  /** SSE resume：true = 续订既有流而非新提问 */
+  resume?: boolean
+  /** resume 时已收到的最后事件 seq，服务端从其后回放 */
+  afterSeq?: number
+}
+
+/** 对话附件芯片元数据（随用户消息落库与返回） */
+export interface ChatAttachmentBrief {
+  id: string
+  name: string
+  size: number
+  mimeType: string
 }
 
 // ===== 完成响应管理 =====
@@ -362,6 +376,12 @@ export interface DeflectionOverview {
   /** 未升级但收到过 👎：AI 自称解决、用户不认 —— 偏转率里的水分 */
   lowConfidenceDeflections: number
   lowConfidenceShare: number | null
+  /**
+   * 偏转成功但整个会话一条引用都没有的会话数 —— 水分的**上限**（纯闲聊同样零引用）。
+   * 判据来自回答落库时的 Message.sources，不依赖可关的 AgentRun
+   */
+  ungroundedDeflections: number
+  ungroundedShare: number | null
   /** 有提问但整期没有一条 AI 回答（断连/失败），不进任何比率 */
   unansweredSessions: number
   /** 追不回会话归属的 AI 工单数（加列前的历史数据），不进分子 */
@@ -386,6 +406,36 @@ export interface KnowledgeGapCandidate {
   solution: string
   hasSolution: boolean
   markdown: string
+  /**
+   * 台账里的处置状态。清单只返回 open 的条目，
+   * 这个字段留着是为了让消费端不至于误以为"看到的 = 全部缺口"
+   */
+  status?: KnowledgeGapStatus
+}
+
+/** 缺口处置状态：待补 / 已成文（要指出处）/ 判定不成文 */
+export type KnowledgeGapStatus = 'open' | 'covered' | 'dismissed'
+
+/** 缺口台账全貌（含已处置的，不只是待补清单） */
+export interface KnowledgeGapBoard {
+  total: number
+  open: number
+  covered: number
+  dismissed: number
+  /** 最早一条未补缺口挂了多少天；没有未补项时 null */
+  oldestOpenDays: number | null
+  /** 标了成文却没留出处的条数 */
+  coveredWithoutDoc: number
+  /** 成文之后同一句求助又出现并被人工解决 —— 那篇文档没解决它 */
+  reopened: Array<{
+    closedTicketId: string
+    closedDocId: string | null
+    closedAt: string
+    recurredTicketId: string
+    recurredAt: string
+    question: string
+    category: string
+  }>
 }
 
 export interface KnowledgeGapSummary {
@@ -403,7 +453,10 @@ export interface KnowledgeGapsResult {
   /** 已解决但追不回会话归属的 AI 工单数 —— 清单可能比这个数不全 */
   unlinkedResolvedTickets: number
   summary: KnowledgeGapSummary
+  /** 只含台账里仍为 open 的条目 */
   candidates: KnowledgeGapCandidate[]
+  /** 台账全貌：处置分布、挂了多久、成文后又复发的 */
+  board: KnowledgeGapBoard
 }
 
 /** 运行明细列表项（轻量，不含 steps） */

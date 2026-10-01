@@ -1,0 +1,21 @@
+# 构建上下文裁剪（context = 仓库根，见 apps/server/Dockerfile 头部说明）
+.git
+.turbo
+.pnpm-store
+node_modules
+**/node_modules
+**/dist
+**/dist-electron
+**/*.log
+.vscode
+.idea
+.husky
+
+# 桌面端源码不进服务端镜像（仅 manifest 参与 workspace 解析）
+apps/desktop/*
+!apps/desktop/package.json
+
+# 服务端内无需进镜像的内容
+apps/server/.env
+apps/server/uploads
+apps/server/coverage

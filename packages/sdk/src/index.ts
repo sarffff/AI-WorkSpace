@@ -1,5 +1,12 @@
 export { HttpClient, ApiError, AUTH_UNAUTHORIZED_EVENT } from './http-client'
-export type { StreamChunk, ServerChatSession, ServerMessage } from './http-client'
+export type {
+  StreamChunk,
+  ServerChatSession,
+  ServerMessage,
+  ServerUser,
+  ServerNotification,
+  ServerMemory,
+} from './http-client'
 export type {
   Message,
   MessageSource,
@@ -37,6 +44,7 @@ export type {
   DailyTokenStat,
   CompletionRequest,
   CompletionResponse,
+  ChatAttachmentBrief,
   NavTab,
   AppSettings,
   AuthResponse,

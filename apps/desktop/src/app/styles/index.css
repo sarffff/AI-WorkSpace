@@ -3,9 +3,9 @@
 @tailwind utilities;
 
 /* ============================================================
-   ServiceDeck · Operations Deck 设计底座（dark / light 双主题）
-   Dark  = 深墨青机身 / 霓虹绿遥测 / 琥珀信号灯
-   Light = 控制室纸白 / 墨绿主色 / 琥珀信号保留
+   ServiceDeck · 纸墨服务台设计底座（dark / light 双主题）
+   Light = 暖纸画布 / 墨字 / 朱砂印章点缀
+   Dark  = 墨褐夜纸 / 纸白文字 / 朱砂提亮
    语义色通过 CSS 变量驱动，组件统一使用语义类
    ============================================================ */
 
@@ -13,80 +13,87 @@
 :root.dark {
   color-scheme: dark;
 
-  --surface-0: #070a12; /* 机身底色 */
-  --surface-1: rgba(10, 15, 28, 0.85); /* 侧边栏/容器 */
-  --surface-2: rgba(15, 22, 38, 0.72); /* 卡片面板 */
-  --surface-3: rgba(30, 41, 59, 0.55); /* 悬停/输入内衬 */
-  --surface-4: rgba(2, 6, 15, 0.7); /* 深陷槽（代码槽/只读槽） */
+  --surface-0: #171412; /* 夜纸画布 */
+  --surface-1: #1d1916; /* 侧栏/图标轨 */
+  --surface-2: #242019; /* 卡片面板 */
+  --surface-3: rgba(242, 237, 228, 0.08); /* 悬停/输入内衬 */
+  --surface-4: rgba(0, 0, 0, 0.32); /* 深陷槽（代码槽/只读槽） */
 
-  --line: rgba(30, 41, 59, 0.65); /* 默认描边 */
-  --line-strong: rgba(51, 65, 85, 0.75); /* 强调描边 */
+  --line: rgba(242, 237, 228, 0.12); /* 默认描边 */
+  --line-strong: rgba(242, 237, 228, 0.22); /* 强调描边 */
 
-  --text-1: #f1f5f9; /* 主文字 */
-  --text-2: #94a3b8; /* 次级文字 */
-  --text-3: #64748b; /* 弱文字 */
-  --text-4: #475569; /* 装饰/注释 */
+  --text-1: #f2ede4; /* 墨字反白 */
+  --text-2: #cfc8bd;
+  --text-3: #a29a8f;
+  --text-4: #7a736a;
 
-  --brand: #34d399; /* 品牌主色（亮） */
-  --brand-strong: #10b981; /* 品牌实底 */
-  --brand-deep: #047857;
-  --brand-on: #04231b; /* 品牌实底上的文字 */
+  --brand: #e0684c; /* 朱砂（暗底提亮） */
+  --brand-strong: #f2ede4; /* 主行动实底（纸白按钮） */
+  --brand-deep: #b3352c;
+  --brand-on: #1c1917; /* 主行动实底上的文字 */
 
-  --signal: #fbbf24; /* 琥珀信号 */
+  --signal: #d99a3d; /* 琥珀信号（工单/确认场景） */
 
-  --grid-line: rgba(148, 163, 184, 0.055);
-  --glow-a: rgba(52, 211, 153, 0.09);
-  --glow-b: rgba(251, 191, 36, 0.05);
-  --glow-c: rgba(56, 189, 248, 0.04);
-  --noise-opacity: 0.028;
+  --grid-line: transparent;
+  --glow-a: transparent;
+  --glow-b: transparent;
+  --glow-c: transparent;
+  --noise-opacity: 0.05;
   --noise-blend: overlay;
 
-  --brand-glow: rgba(52, 211, 153, 0.45);
-  --brand-ring: rgba(52, 211, 153, 0.15);
-  --shadow-card: 0 10px 30px -12px rgba(0, 0, 0, 0.6);
+  --brand-glow: rgba(224, 104, 76, 0.18);
+  --brand-ring: rgba(242, 237, 228, 0.14);
+  --shadow-card: 0 8px 24px -12px rgba(0, 0, 0, 0.6);
 }
 
 :root.light {
   color-scheme: light;
 
-  --surface-0: #f4f6f5; /* 纸白机身 */
-  --surface-1: rgba(255, 255, 255, 0.88);
-  --surface-2: rgba(255, 255, 255, 0.92);
-  --surface-3: rgba(2, 44, 34, 0.055);
-  --surface-4: rgba(2, 44, 34, 0.035);
+  --surface-0: #f4f1ea; /* 暖纸画布 */
+  --surface-1: #edeae1; /* 侧栏/图标轨 */
+  --surface-2: #fbfaf6; /* 卡片面板 */
+  --surface-3: rgba(28, 25, 23, 0.06); /* 悬停/输入内衬 */
+  --surface-4: rgba(28, 25, 23, 0.035); /* 深陷槽 */
 
-  --line: rgba(15, 42, 34, 0.12);
-  --line-strong: rgba(15, 42, 34, 0.2);
+  --line: rgba(28, 25, 23, 0.12);
+  --line-strong: rgba(28, 25, 23, 0.24);
 
-  --text-1: #0c1a14; /* 墨绿黑 */
-  --text-2: #43554d;
-  --text-3: #6e7f77;
-  --text-4: #93a29a;
+  --text-1: #1c1917; /* 墨字 */
+  --text-2: #46403a;
+  --text-3: #6f675f;
+  --text-4: #9d968c;
 
-  --brand: #059669; /* 加深的主色，保证浅底对比度 */
-  --brand-strong: #10b981;
-  --brand-deep: #047857;
-  --brand-on: #04231b;
+  --brand: #c2452d; /* 朱砂印章红 */
+  --brand-strong: #1c1917; /* 主行动实底（墨黑按钮） */
+  --brand-deep: #93301d;
+  --brand-on: #f7f4ee;
 
-  --signal: #d97706;
+  --signal: #b45309;
 
-  --grid-line: rgba(12, 60, 45, 0.06);
-  --glow-a: rgba(5, 150, 105, 0.08);
-  --glow-b: rgba(217, 119, 6, 0.05);
-  --glow-c: rgba(14, 116, 144, 0.05);
-  --noise-opacity: 0.035;
+  --grid-line: transparent;
+  --glow-a: transparent;
+  --glow-b: transparent;
+  --glow-c: transparent;
+  --noise-opacity: 0.028;
   --noise-blend: multiply;
 
-  --brand-glow: rgba(5, 150, 105, 0.35);
-  --brand-ring: rgba(5, 150, 105, 0.18);
-  --shadow-card: 0 10px 24px -14px rgba(12, 42, 32, 0.25);
+  --brand-glow: rgba(194, 69, 45, 0.14);
+  --brand-ring: rgba(28, 25, 23, 0.1);
+  --shadow-card: 0 8px 24px -16px rgba(28, 25, 23, 0.25);
 }
 
 body {
   margin: 0;
   background-color: var(--surface-0);
   color: var(--text-2);
-  font-family: 'Manrope', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  font-family:
+    'Manrope',
+    -apple-system,
+    'Segoe UI',
+    'PingFang SC',
+    'Hiragino Sans GB',
+    'Microsoft YaHei',
+    sans-serif;
   font-feature-settings:
     'ss01' on,
     'cv05' on;
@@ -96,7 +103,8 @@ body {
 }
 
 .font-display {
-  font-family: 'Sora', 'Manrope', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  /* 编辑风衬线：标题/问候语/印章字 */
+  font-family: Georgia, 'Times New Roman', 'Songti SC', 'STSong', 'SimSun', serif;
 }
 
 .font-mono,
@@ -126,25 +134,17 @@ kbd {
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-3);
+  background: var(--text-4);
 }
 
-/* ---------- 氛围层：蓝图网格 + 遥测辉光 + 颗粒噪点 ---------- */
+/* ---------- 氛围层：纸纹颗粒保留，网格/辉光保持关闭 ---------- */
 
 .bg-blueprint {
-  background-image:
-    linear-gradient(var(--grid-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
-  background-size: 36px 36px;
-  mask-image: radial-gradient(ellipse 90% 80% at 50% 0%, black 30%, transparent 78%);
-  -webkit-mask-image: radial-gradient(ellipse 90% 80% at 50% 0%, black 30%, transparent 78%);
+  background-image: none;
 }
 
 .glow-field {
-  background:
-    radial-gradient(ellipse 55% 42% at 18% -8%, var(--glow-a), transparent 70%),
-    radial-gradient(ellipse 42% 36% at 88% -12%, var(--glow-b), transparent 70%),
-    radial-gradient(ellipse 60% 40% at 55% 112%, var(--glow-c), transparent 70%);
+  background: none;
 }
 
 .noise-overlay {
@@ -157,12 +157,12 @@ kbd {
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
-/* ---------- 入场动效：编排式 stagger reveal ---------- */
+/* ---------- 入场动效：轻量 stagger reveal ---------- */
 
 @keyframes rise-in {
   from {
     opacity: 0;
-    transform: translateY(12px);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
@@ -172,7 +172,7 @@ kbd {
 
 .rise-in {
   opacity: 0;
-  animation: rise-in 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  animation: rise-in 0.35s cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 
 @keyframes fade-in {
@@ -185,36 +185,32 @@ kbd {
 }
 
 .fade-in {
-  animation: fade-in 0.4s ease forwards;
+  animation: fade-in 0.25s ease forwards;
 }
 
-/* ---------- 遥测元素：呼吸灯 / 流式光标 / 扫掠进度 ---------- */
+/* ---------- 状态元素：呼吸灯 / 流式光标 / 生成指示 ---------- */
 
 @keyframes pulse-dot {
   0%,
   100% {
     opacity: 1;
-    box-shadow: 0 0 8px 2px var(--brand-glow);
   }
   50% {
-    opacity: 0.45;
-    box-shadow: 0 0 2px 0 rgba(0, 0, 0, 0);
+    opacity: 0.4;
   }
 }
 
 .pulse-dot {
-  animation: pulse-dot 1.8s ease-in-out infinite;
+  animation: pulse-dot 2s ease-in-out infinite;
 }
 
 @keyframes pulse-dot-red {
   0%,
   100% {
     opacity: 1;
-    box-shadow: 0 0 8px 2px rgba(251, 113, 133, 0.45);
   }
   50% {
-    opacity: 0.45;
-    box-shadow: 0 0 2px 0 rgba(0, 0, 0, 0);
+    opacity: 0.4;
   }
 }
 
@@ -240,8 +236,7 @@ kbd {
   height: 15px;
   margin-left: 3px;
   border-radius: 2px;
-  background: var(--brand);
-  box-shadow: 0 0 10px var(--brand-glow);
+  background: var(--text-3);
   animation: cursor-blink 0.85s steps(1) infinite;
   vertical-align: text-bottom;
 }
@@ -252,10 +247,10 @@ kbd {
   60%,
   100% {
     transform: translateY(0);
-    opacity: 0.4;
+    opacity: 0.35;
   }
   30% {
-    transform: translateY(-4px);
+    transform: translateY(-3px);
     opacity: 1;
   }
 }
@@ -264,11 +259,11 @@ kbd {
   width: 5px;
   height: 5px;
   border-radius: 9999px;
-  background: var(--brand);
+  background: var(--text-2);
   animation: dot-wave 1.1s ease-in-out infinite;
 }
 
-/* 生成中的细扫掠条 */
+/* 生成中的细扫掠条（弱化保留） */
 @keyframes scanline {
   0% {
     transform: translateX(-100%);
@@ -289,37 +284,32 @@ kbd {
   inset: 0;
   width: 40%;
   background: linear-gradient(90deg, transparent, var(--brand-glow), transparent);
-  opacity: 0.5;
-  animation: scanline 1.6s linear infinite;
+  opacity: 0.6;
+  animation: scanline 1.8s linear infinite;
 }
 
-/* 卡片悬浮时的信号描边 */
+/* 卡片悬浮反馈 */
 .card-hover {
   transition:
-    border-color 0.25s ease,
-    box-shadow 0.25s ease,
-    transform 0.25s ease,
-    background-color 0.25s ease;
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    background-color 0.2s ease;
 }
 
 .card-hover:hover {
-  transform: translateY(-2px);
-  border-color: color-mix(in srgb, var(--brand) 40%, transparent);
-  box-shadow:
-    var(--shadow-card),
-    0 0 0 1px var(--brand-ring);
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-card);
 }
 
-/* 面板统一质感 */
+/* 面板统一质感：实底 + 发丝描边 */
 .panel {
   background: var(--surface-2);
   border: 1px solid var(--line);
-  backdrop-filter: blur(8px);
 }
 
-/* 遥测标签的切角徽章感 */
+/* 小型大写标签 */
 .tag-telemetry {
-  letter-spacing: 0.12em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
@@ -334,7 +324,7 @@ header,
 aside,
 main {
   transition-property: background-color, border-color, color, box-shadow;
-  transition-duration: 0.25s;
+  transition-duration: 0.2s;
   transition-timing-function: ease;
 }
 
@@ -366,8 +356,7 @@ main {
   gap: 0.75rem;
   color: var(--text-4);
   font-size: 10px;
-  font-family: 'JetBrains Mono', monospace;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
 }
 
 .divider-label::before,

@@ -1,9 +1,26 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common'
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  StreamableFile,
+  UseFilters,
+  UseGuards,
+  UseInterceptors,
+  UploadedFile,
+} from '@nestjs/common'
+import { FileInterceptor } from '@nestjs/platform-express'
 import { TicketsService } from './tickets.service'
+import { TicketAttachmentsService, MAX_ATTACHMENT_BYTES } from './ticket-attachments.service'
 import { CreateTicketDto, CreateTicketCommentDto, UpdateTicketDto } from './tickets.dto'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { CurrentUser } from '../auth/user-id.decorator'
 import type { SafeUser } from '../auth/auth.service'
+import { UploadErrorFilter } from '../knowledge/upload-error.filter'
 
 /** 查询参数取整：缺省或非法一律 undefined，交给服务端的默认值与钳制处理 */
 function intOpt(raw: string | undefined): number | undefined {
@@ -11,10 +28,19 @@ function intOpt(raw: string | undefined): number | undefined {
   return Number.isFinite(n) ? n : undefined
 }
 
+/** 下载响应头 Content-Disposition：ASCII 兜底 + UTF-8 编码文件名，兼容中文名 */
+function contentDisposition(filename: string): string {
+  const ascii = filename.replace(/[^\x20-\x7E]/g, '_').replace(/"/g, '')
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`
+}
+
 @Controller('tickets')
 @UseGuards(JwtAuthGuard)
 export class TicketsController {
-  constructor(private readonly ticketsService: TicketsService) {}
+  constructor(
+    private readonly ticketsService: TicketsService,
+    private readonly attachments: TicketAttachmentsService,
+  ) {}
 
   // 工单列表（员工只看自己的，坐席/管理员看全部）
   @Get()
@@ -33,6 +59,13 @@ export class TicketsController {
   stats(@CurrentUser() user: SafeUser, @Query('days') days?: string) {
     const d = Math.min(Math.max(parseInt(days || '30', 10) || 30, 1), 90)
     return this.ticketsService.stats(user, d)
+  }
+
+  // 实时 SLA 违约看板（仅坐席/管理员）：扫未完结存量，分 已违约 / 濒临违约 / 尚在时限。
+  // 需在 :id 路由之前注册，避免 sla 被当作工单编号
+  @Get('sla/breaches')
+  slaBreaches(@CurrentUser() user: SafeUser) {
+    return this.ticketsService.slaBreaches(user)
   }
 
   // ===== 派单预演与回测（只读，绝不写 assigneeId） =====
@@ -86,6 +119,69 @@ export class TicketsController {
     @Body() dto: CreateTicketCommentDto,
   ) {
     return this.ticketsService.addComment(user, id, dto)
+  }
+
+  // 派单落库（仅坐席/管理员）：把预演里"够硬"的那条真正写进 assigneeId。
+  // 显式一张一张点，不做建单即自动派；弱信号（证据不足/无信号/不可路由）一律拒绝并说明原因。
+  @Post(':id/dispatch')
+  applyDispatch(
+    @CurrentUser() user: SafeUser,
+    @Param('id') id: string,
+    @Query('minEvidence') minEvidence?: string,
+    @Query('maxLoad') maxLoad?: string,
+  ) {
+    return this.ticketsService.applyDispatch(user, id, {
+      minEvidence: intOpt(minEvidence),
+      maxLoad: intOpt(maxLoad),
+    })
+  }
+
+  // ===== 工单附件（截图/日志/配置等第一现场证据） =====
+  // 可见性沿用工单本身：员工只能看/传自己工单的附件，坐席/管理员全部。
+
+  @Get(':id/attachments')
+  listAttachments(@CurrentUser() user: SafeUser, @Param('id') id: string) {
+    return this.attachments.list(user, id)
+  }
+
+  // 上传：体积上限在此拦截（buffer 全程在内存 + 落盘，无上限单文件即可打爆内存）。
+  // 超限由 multer 抛 LIMIT_FILE_SIZE，UploadErrorFilter 归一成 413 + 明确文案。
+  @Post(':id/attachments')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_ATTACHMENT_BYTES } }))
+  @UseFilters(new UploadErrorFilter(MAX_ATTACHMENT_BYTES))
+  addAttachment(
+    @CurrentUser() user: SafeUser,
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    return this.attachments.add(user, id, file)
+  }
+
+  @Get(':id/attachments/:attachmentId/download')
+  async downloadAttachment(
+    @CurrentUser() user: SafeUser,
+    @Param('id') id: string,
+    @Param('attachmentId') attachmentId: string,
+  ) {
+    const { filename, mimeType, bytes } = await this.attachments.getForDownload(
+      user,
+      id,
+      attachmentId,
+    )
+    return new StreamableFile(bytes, {
+      type: mimeType,
+      disposition: contentDisposition(filename),
+      length: bytes.length,
+    })
+  }
+
+  @Delete(':id/attachments/:attachmentId')
+  removeAttachment(
+    @CurrentUser() user: SafeUser,
+    @Param('id') id: string,
+    @Param('attachmentId') attachmentId: string,
+  ) {
+    return this.attachments.remove(user, id, attachmentId)
   }
 
   @Patch(':id')

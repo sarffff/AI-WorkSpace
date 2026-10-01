@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common'
+import { Injectable, Logger, NotFoundException } from '@nestjs/common'
 import { PrismaService } from '@/prisma/prisma.service'
 import { EmbeddingsClient, cosineSimilarity } from '@/common/embeddings'
 import type { Prisma } from '@prisma/client'
@@ -133,5 +133,34 @@ export class MemoryService {
   // 删除某条记忆（按 userId + 内容）
   async forget(userId: string, content: string) {
     await this.prisma.memory.deleteMany({ where: { userId, content } })
+  }
+
+  // ===== 管理视图（合规与透明：用户有权知道 Agent 记住了什么并删除） =====
+
+  async list(userId: string) {
+    return this.prisma.memory.findMany({
+      where: { userId },
+      orderBy: [{ category: 'asc' }, { updatedAt: 'desc' }],
+      select: {
+        id: true,
+        category: true,
+        content: true,
+        chatId: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    })
+  }
+
+  // deleteMany 带 userId 条件：别人的记忆删不到
+  async removeById(userId: string, id: string) {
+    const res = await this.prisma.memory.deleteMany({ where: { id, userId } })
+    if (res.count === 0) throw new NotFoundException('记忆不存在')
+    return { success: true }
+  }
+
+  async clear(userId: string) {
+    const res = await this.prisma.memory.deleteMany({ where: { userId } })
+    return { deleted: res.count }
   }
 }

@@ -79,19 +79,14 @@ export const AuthPage: React.FC = () => {
   }
 
   const inputCls =
-    'w-full bg-s3 border border-line focus:border-brand/60 focus:shadow-[0_0_0_1px_var(--brand-ring)] rounded-lg px-3.5 py-2.5 text-xs text-t1 placeholder:text-t4 outline-none transition-all'
+    'w-full bg-s3 border border-line focus:border-linestrong rounded-lg px-3.5 py-2.5 text-xs text-t1 placeholder:text-t4 outline-none transition-all'
 
   return (
     <div className="relative flex h-screen w-screen overflow-hidden bg-s0 font-sans">
-      {/* 氛围层 */}
-      <div className="glow-field pointer-events-none absolute inset-0 z-0" />
-      <div className="bg-blueprint pointer-events-none absolute inset-0 z-0" />
-      <div className="noise-overlay" />
-
       {/* 主题切换 */}
       <button
         onClick={toggleTheme}
-        className="absolute top-5 right-5 z-20 w-9 h-9 rounded-lg panel flex items-center justify-center text-t2 hover:text-brand hover:border-brand/40 transition-all"
+        className="absolute top-5 right-5 z-20 w-9 h-9 rounded-lg panel flex items-center justify-center text-t2 hover:text-t1 transition-all"
         title={theme === 'dark' ? '切换到日间模式' : '切换到夜间模式'}
       >
         {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
@@ -99,7 +94,7 @@ export const AuthPage: React.FC = () => {
 
       {/* 轻提示 */}
       {toast && (
-        <div className="absolute top-5 left-1/2 -translate-x-1/2 z-30 fade-in px-4 py-2 rounded-lg panel text-xs text-signal font-mono">
+        <div className="absolute top-5 left-1/2 -translate-x-1/2 z-30 fade-in px-4 py-2 rounded-lg panel text-xs text-signal">
           {toast}
         </div>
       )}
@@ -108,7 +103,7 @@ export const AuthPage: React.FC = () => {
       <div className="hidden lg:flex relative z-10 w-[46%] flex-col justify-between p-12 border-r border-line bg-s1 backdrop-blur-xl">
         <div className="rise-in flex items-center gap-3">
           <div className="relative">
-            <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-emerald-400/90 to-teal-600/90 flex items-center justify-center shadow-lg shadow-emerald-500/25">
+            <div className="w-11 h-11 rounded-xl bg-brand-strong flex items-center justify-center">
               <Activity className="w-6 h-6 text-brand-on" strokeWidth={2.5} />
             </div>
             <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-brand border-2 border-s0 pulse-dot" />
@@ -172,7 +167,7 @@ export const AuthPage: React.FC = () => {
         <div className="w-full max-w-sm">
           {/* 移动端品牌（窄屏时显示） */}
           <div className="lg:hidden rise-in flex items-center gap-2.5 mb-8 justify-center">
-            <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-emerald-400/90 to-teal-600/90 flex items-center justify-center">
+            <div className="w-9 h-9 rounded-lg bg-brand-strong flex items-center justify-center">
               <Activity className="w-5 h-5 text-brand-on" strokeWidth={2.5} />
             </div>
             <span className="font-display font-bold text-t1">ServiceDeck</span>
@@ -297,7 +292,7 @@ export const AuthPage: React.FC = () => {
             <button
               type="submit"
               disabled={busy}
-              className="w-full py-3 rounded-lg bg-brand-strong hover:brightness-110 disabled:opacity-50 text-brand-on text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-emerald-500/20"
+              className="w-full py-3 rounded-lg bg-brand-strong hover:brightness-110 disabled:opacity-50 text-brand-on text-xs font-bold flex items-center justify-center gap-2 transition-all"
             >
               {busy ? (
                 <Loader2 className="w-4 h-4 animate-spin" />

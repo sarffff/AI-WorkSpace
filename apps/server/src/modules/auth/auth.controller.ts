@@ -1,8 +1,8 @@
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common'
-import { AuthService } from './auth.service'
-import { LoginDto, RegisterDto } from './auth.dto'
+import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common'
+import { AuthService, SafeUser } from './auth.service'
+import { LoginDto, RegisterDto, CreateUserDto, UpdateUserDto, ResetPasswordDto } from './auth.dto'
 import { JwtAuthGuard } from './jwt-auth.guard'
-import { UserId } from './user-id.decorator'
+import { CurrentUser, UserId } from './user-id.decorator'
 
 @Controller('auth')
 export class AuthController {
@@ -25,5 +25,39 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   me(@UserId() userId: string) {
     return this.authService.validateUser(userId)
+  }
+
+  // ===== 成员管理（仅 admin，服务层断言） =====
+
+  // 成员列表 + 部门字典
+  @Get('users')
+  @UseGuards(JwtAuthGuard)
+  listUsers(@CurrentUser() user: SafeUser) {
+    return this.authService.listUsers(user)
+  }
+
+  // 开通账号（默认关自助注册后的唯一建号入口）
+  @Post('users')
+  @UseGuards(JwtAuthGuard)
+  createUser(@CurrentUser() user: SafeUser, @Body() dto: CreateUserDto) {
+    return this.authService.createUser(user, dto)
+  }
+
+  // 修改昵称/部门/角色
+  @Patch('users/:id')
+  @UseGuards(JwtAuthGuard)
+  updateUser(@CurrentUser() user: SafeUser, @Param('id') id: string, @Body() dto: UpdateUserDto) {
+    return this.authService.updateUser(user, id, dto)
+  }
+
+  // 重置成员密码
+  @Post('users/:id/reset-password')
+  @UseGuards(JwtAuthGuard)
+  resetPassword(
+    @CurrentUser() user: SafeUser,
+    @Param('id') id: string,
+    @Body() dto: ResetPasswordDto,
+  ) {
+    return this.authService.resetPassword(user, id, dto)
   }
 }

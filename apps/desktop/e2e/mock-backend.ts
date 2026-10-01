@@ -136,6 +136,43 @@ const DEFLECTION = {
   ],
 }
 
+// 坐席工单服务台的看板数：40 张单里 22 张是 AI 升级 → 「AI 升级单占比」应为 55%。
+// 数字是故意挑的：占比不等于偏转率（分母是工单不是会话），用例钉的就是这两套口径不再混用
+const TICKET_STATS = {
+  periodDays: 30,
+  sessions: 12,
+  tickets: {
+    total: 40,
+    escalated: 22,
+    manual: 18,
+    open: 6,
+    processing: 9,
+    resolved: 20,
+    closed: 5,
+  },
+  backlog: 15,
+  sla: {
+    met: 17,
+    total: 20,
+    rate: 0.85,
+    avgResolutionHours: 11.4,
+    avgFirstResponseHours: 2.3,
+    thresholdHours: { urgent: 4, high: 8, normal: 24, low: 48 },
+  },
+  byPriority: [
+    { priority: 'urgent', total: 4, escalated: 3, resolved: 3, slaMet: 3 },
+    { priority: 'high', total: 12, escalated: 7, resolved: 6, slaMet: 5 },
+    { priority: 'normal', total: 18, escalated: 9, resolved: 8, slaMet: 7 },
+    { priority: 'low', total: 6, escalated: 3, resolved: 3, slaMet: 2 },
+  ],
+  byCategory: [
+    { category: 'network', total: 15, escalated: 9, resolved: 8 },
+    { category: 'account', total: 10, escalated: 6, resolved: 5 },
+    { category: 'hardware', total: 8, escalated: 4, resolved: 4 },
+    { category: 'other', total: 7, escalated: 3, resolved: 3 },
+  ],
+}
+
 const SOURCES = [
   {
     documentId: 'doc-vpn',
@@ -374,6 +411,9 @@ export async function startMockBackend(): Promise<MockBackend> {
       return json(res, 200, KNOWLEDGE_GAPS)
     }
     // ===== 运营看板（staffOnly：只有坐席/管理员进得去这块页面） =====
+    if (method === 'GET' && path === '/tickets/stats') {
+      return json(res, 200, TICKET_STATS)
+    }
     if (method === 'GET' && path === '/analytics/overview') {
       return json(res, 200, ANALYTICS_OVERVIEW)
     }

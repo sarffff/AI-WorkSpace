@@ -3,6 +3,7 @@ import type { TicketsService } from '@/modules/tickets/tickets.service'
 import type { MemoryService } from '@/modules/memory/memory.service'
 import { AgentToolRegistry } from './registry.service'
 import { CreateTicketTool } from './create-ticket.tool'
+import { AddTicketCommentTool, CloseMyTicketTool } from './ticket-write-tools'
 import { GetTicketTool, LookupMyTicketsTool, SearchKnowledgeTool } from './read-tools'
 import { toJsonSchema, validateArgs } from './schema'
 import type { ToolContext } from './types'
@@ -318,22 +319,28 @@ describe('注册表装配（真实工具）', () => {
     new LookupMyTicketsTool({} as TicketsService),
     new GetTicketTool({} as TicketsService),
     new CreateTicketTool({} as TicketsService, {} as MemoryService),
+    new AddTicketCommentTool({} as TicketsService),
+    new CloseMyTicketTool({} as TicketsService),
   ])
 
-  it('暴露全部四个工具', () => {
+  it('暴露全部六个工具', () => {
     expect(registry.names()).toEqual([
       'search_knowledge',
       'lookup_my_tickets',
       'get_ticket',
       'create_ticket',
+      'add_ticket_comment',
+      'close_my_ticket',
     ])
   })
 
-  it('三个读工具可并行，建单工具必须串行', () => {
+  it('读工具可并行，写工具（建单/追评/关单）必须串行', () => {
     expect(registry.isReadOnly('search_knowledge')).toBe(true)
     expect(registry.isReadOnly('lookup_my_tickets')).toBe(true)
     expect(registry.isReadOnly('get_ticket')).toBe(true)
     expect(registry.isReadOnly('create_ticket')).toBe(false)
+    expect(registry.isReadOnly('add_ticket_comment')).toBe(false)
+    expect(registry.isReadOnly('close_my_ticket')).toBe(false)
   })
 
   it('create_ticket 的 required 只含 title/content（priority 有 fallback）', () => {

@@ -5,7 +5,7 @@ export default {
   theme: {
     extend: {
       colors: {
-        background: '#070a12',
+        background: 'var(--surface-0)',
         // 语义色：由 CSS 变量驱动，随 dark/light 主题切换
         s0: 'var(--surface-0)',
         s1: 'var(--surface-1)',
@@ -20,12 +20,13 @@ export default {
         t4: 'var(--text-4)',
         brand: 'var(--brand)',
         'brand-strong': 'var(--brand-strong)',
+        'brand-deep': 'var(--brand-deep)',
         'brand-on': 'var(--brand-on)',
         signal: 'var(--signal)',
       },
       fontFamily: {
         sans: ['Manrope', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'sans-serif'],
-        display: ['Sora', 'Manrope', 'PingFang SC', 'Microsoft YaHei', 'sans-serif'],
+        display: ['Georgia', 'Times New Roman', 'Songti SC', 'STSong', 'SimSun', 'serif'],
         mono: ['JetBrains Mono', 'Cascadia Code', 'Consolas', 'monospace'],
       },
     },

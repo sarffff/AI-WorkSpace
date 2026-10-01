@@ -22,6 +22,7 @@ import type {
   AppSettings,
   AuthResponse,
   AuthUser,
+  ChatAttachmentBrief,
 } from '@servicedesk/types'
 
 export type StreamChunk = {
@@ -102,7 +103,41 @@ export interface ServerMessage {
   /** 答案满意度反馈（历史消息重载后据此恢复已评价状态） */
   feedback?: MessageFeedback | null
   feedbackReason?: MessageFeedbackReason | null
+  /** 对话附件元数据（仅 user 消息） */
+  attachments?: ChatAttachmentBrief[] | null
   createdAt: string
+}
+
+// 成员管理视图（仅 admin 接口返回）
+export interface ServerUser {
+  id: string
+  email: string
+  name: string | null
+  department: string | null
+  role: string
+  createdAt: string
+}
+
+// 站内通知（工单事件 / SLA 预警）
+export interface ServerNotification {
+  id: string
+  userId: string
+  type: string
+  title: string
+  body: string
+  payload?: { ticketId?: string } | null
+  read: boolean
+  createdAt: string
+}
+
+// 跨会话长期记忆条目（管理视图）
+export interface ServerMemory {
+  id: string
+  category: string
+  content: string
+  chatId: string | null
+  createdAt: string
+  updatedAt: string
 }
 
 export class HttpClient {
@@ -167,6 +202,70 @@ export class HttpClient {
   // 校验 token，返回当前用户信息
   async me(): Promise<AuthUser> {
     return this.request<AuthUser>('/auth/me')
+  }
+
+  // ===== 成员管理（仅 admin） =====
+
+  // 成员列表 + 部门字典
+  async listUsers(): Promise<{ users: ServerUser[]; departments: string[] }> {
+    return this.request('/auth/users')
+  }
+
+  // 开通账号
+  async createUser(input: {
+    email: string
+    password: string
+    name?: string
+    department?: string
+    role?: string
+  }): Promise<ServerUser> {
+    return this.request('/auth/users', { method: 'POST', body: JSON.stringify(input) })
+  }
+
+  // 修改昵称/部门/角色
+  async updateUser(
+    id: string,
+    input: { name?: string; department?: string; role?: string },
+  ): Promise<ServerUser> {
+    return this.request(`/auth/users/${id}`, { method: 'PATCH', body: JSON.stringify(input) })
+  }
+
+  // 重置成员密码
+  async resetUserPassword(id: string, password: string): Promise<{ success: boolean }> {
+    return this.request(`/auth/users/${id}/reset-password`, {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    })
+  }
+
+  // ===== 站内通知 =====
+
+  // 最近通知 + 未读数（铃铛轮询）
+  async listNotifications(): Promise<{ items: ServerNotification[]; unreadCount: number }> {
+    return this.request('/notifications')
+  }
+
+  async markNotificationRead(id: string): Promise<{ success: boolean }> {
+    return this.request(`/notifications/${id}/read`, { method: 'POST' })
+  }
+
+  async markAllNotificationsRead(): Promise<{ updated: number }> {
+    return this.request('/notifications/read-all', { method: 'POST' })
+  }
+
+  // ===== 记忆管理 =====
+
+  // 我的记忆列表
+  async listMemories(): Promise<ServerMemory[]> {
+    return this.request('/memory')
+  }
+
+  async deleteMemory(id: string): Promise<{ success: boolean }> {
+    return this.request(`/memory/${id}`, { method: 'DELETE' })
+  }
+
+  async clearMemories(): Promise<{ deleted: number }> {
+    return this.request('/memory', { method: 'DELETE' })
   }
 
   // ===== 会话管理 =====
@@ -267,6 +366,18 @@ export class HttpClient {
       throw await toApiError(res)
     }
     return res.json()
+  }
+
+  // 文本建文档（与上传同一条索引流水线；缺口候选草稿晋升走这里）
+  async createTextDocument(input: {
+    name: string
+    content: string
+    department?: string
+  }): Promise<KnowledgeDocument> {
+    return this.request<KnowledgeDocument>('/knowledge/documents/text', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
   }
 
   // 删除知识库文档（级联删除向量块）
@@ -439,50 +550,138 @@ export class HttpClient {
     return this.request<AgentRunDetail>(`/analytics/runs/${id}`)
   }
 
-  // 流式发消息 — 返回 AsyncGenerator，逐 chunk 消费
+  // 流式发消息 — 返回 AsyncGenerator，逐 chunk 消费。
+  //
+  // SSE resume：事件帧带 seq（id 行），网络层断连（非用户取消）时自动以
+  // resume+afterSeq 重连回放错过帧 —— 服务端 pump 不因断连而死，
+  // 网络抖动/窗口短暂刷新不再丢半截回答。resume 得 404（生成已结束/
+  // 服务重启）时静默返回，调用方按常规重载历史消息拿完整答案。
   async *streamMessage(
     chatId: string,
     req: CompletionRequest,
     signal?: AbortSignal,
   ): AsyncGenerator<StreamChunk> {
-    const res = await fetch(`${this.baseUrl}/chats/${chatId}/completions/stream`, {
-      method: 'POST',
-      headers: this.authHeaders(),
-      body: JSON.stringify(req),
-      signal,
-    })
+    const MAX_RESUME_ATTEMPTS = 3
+    let lastSeq = 0
+    let mode: 'new' | 'resume' = 'new'
 
+    for (let attempts = 0; ; attempts++) {
+      const payload = mode === 'new' ? req : { ...req, resume: true, afterSeq: lastSeq }
+      let res: Response
+      try {
+        res = await fetch(`${this.baseUrl}/chats/${chatId}/completions/stream`, {
+          method: 'POST',
+          headers: this.authHeaders(),
+          body: JSON.stringify(payload),
+          signal,
+        })
+      } catch (err) {
+        // 用户取消不是网络故障
+        if (signal?.aborted) return
+        // 新请求连不上 = 后端不可达，resume 无从谈起：照原语义抛给调用方回退
+        if (mode === 'new' || attempts >= MAX_RESUME_ATTEMPTS) throw err
+        await new Promise((r) => setTimeout(r, 400 * (attempts + 1)))
+        continue
+      }
+
+      if (!res.ok) {
+        if (res.status === 401) handleUnauthorized()
+        // resume 得 404：生成已结束或服务重启，缓冲没了 —— 不抛错，
+        // 调用方的历史重载会拿到已落库的完整/半成品回答
+        if (mode === 'resume' && res.status === 404) return
+        // 服务端在切到 SSE 之前用 JSON 拒绝（并发超了 / 会话忙 / 今天 token 预算用尽）：
+        // 只报 statusText 会把「今天用量到顶」这种可读原因丢掉，客户端也无从判断该不该回退
+        throw await toApiError(res)
+      }
+
+      const reader = res.body!.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+
+          for (const line of lines) {
+            const trimmed = line.trim()
+            // seq 记账：断连重连时告诉服务端从哪回放
+            if (trimmed.startsWith('id: ')) {
+              const seq = parseInt(trimmed.slice(4), 10)
+              if (Number.isFinite(seq)) lastSeq = Math.max(lastSeq, seq)
+              continue
+            }
+            if (!trimmed.startsWith('data: ')) continue
+            const raw = trimmed.slice(6)
+            if (raw === '[DONE]') return
+            try {
+              yield JSON.parse(raw)
+            } catch {
+              // skip
+            }
+          }
+        }
+        return // 流正常结束
+      } catch {
+        // 用户主动停止不算断连：退订即可，别去开第二条流
+        if (signal?.aborted) return
+        // 走到这里就是读流抛错（正常结束已在上面 return）——不需要额外的标志位，
+        // 下面的 attempts 判定决定是切 resume 重试还是抛统一错误
+      }
+
+      // 网络层断连：切 resume 模式有限重试；超限抛统一错误让调用方走回退
+      if (attempts >= MAX_RESUME_ATTEMPTS) {
+        throw new ApiError('流连接中断且续订失败，请重试', 0, 'stream_broken')
+      }
+      mode = 'resume'
+      await new Promise((r) => setTimeout(r, 400 * (attempts + 1)))
+    }
+  }
+
+  // 显式停止生成：流与连接解耦后，abort 只退订，取消泵要走这个端点
+  async stopStream(chatId: string): Promise<{ success: boolean }> {
+    return this.request(`/chats/${chatId}/stop`, { method: 'POST' })
+  }
+
+  // ===== 对话附件 =====
+
+  // 上传对话附件（composer 纸夹）：返回芯片元数据
+  async uploadChatAttachment(
+    chatId: string,
+    file: File | Blob,
+    filename: string,
+  ): Promise<ChatAttachmentBrief> {
+    const form = new FormData()
+    form.append('file', file, filename)
+    const res = await fetch(`${this.baseUrl}/chats/${chatId}/attachments`, {
+      method: 'POST',
+      headers: { Authorization: this.authHeaders()['Authorization'] || '' },
+      body: form,
+    })
     if (!res.ok) {
       if (res.status === 401) handleUnauthorized()
-      // 服务端在切到 SSE 之前用 JSON 拒绝（并发超了 / 会话忙 / 今天 token 预算用尽）：
-      // 只报 statusText 会把「今天用量到顶」这种可读原因丢掉，客户端也无从判断该不该回退
       throw await toApiError(res)
     }
+    return res.json()
+  }
 
-    const reader = res.body!.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
+  async deleteChatAttachment(chatId: string, attachmentId: string): Promise<{ success: boolean }> {
+    return this.request(`/chats/${chatId}/attachments/${attachmentId}`, { method: 'DELETE' })
+  }
 
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed.startsWith('data: ')) continue
-        const raw = trimmed.slice(6)
-        if (raw === '[DONE]') return
-        try {
-          const parsed = JSON.parse(raw)
-          yield parsed
-        } catch {
-          // skip
-        }
-      }
+  // 下载附件字节（前端转 object URL 打开）
+  async downloadChatAttachment(chatId: string, attachmentId: string): Promise<Blob> {
+    const res = await fetch(
+      `${this.baseUrl}/chats/${chatId}/attachments/${attachmentId}/download`,
+      { headers: this.authHeaders() },
+    )
+    if (!res.ok) {
+      if (res.status === 401) handleUnauthorized()
+      throw await toApiError(res)
     }
+    return res.blob()
   }
 }

@@ -20,6 +20,7 @@ import {
   setActiveTab,
   setActivePrompt,
   clearActivePrompt,
+  setSelectedModel,
 } from '@/entities/chat/model/chatSlice'
 import { api, syncToken } from '@/shared/api/client'
 import { TicketDetailModal } from '@/widgets/ticket-detail/ui/TicketDetailModal'
@@ -31,16 +32,12 @@ import type {
   TicketDraft,
   TicketRef,
   ToolTraceStep,
+  ChatAttachmentBrief,
 } from '@servicedesk/sdk'
 import { ApiError, FEEDBACK_REASON_OPTIONS, TICKET_CATEGORY_OPTIONS } from '@servicedesk/sdk'
 import {
-  Send,
-  Bot,
-  User,
   Square,
-  Activity,
-  ArrowDown,
-  Terminal,
+  ArrowUp,
   Sparkles,
   X,
   BookMarked,
@@ -48,10 +45,12 @@ import {
   Search,
   TicketCheck,
   Check,
+  ChevronDown,
   Loader2,
   ShieldQuestion,
   ThumbsUp,
   ThumbsDown,
+  Paperclip,
 } from 'lucide-react'
 
 const FLUSH_INTERVAL = 60
@@ -83,7 +82,7 @@ const MarkdownMessage: React.FC<{ content: string }> = ({ content }) => (
               {String(children).replace(/\n$/, '')}
             </SyntaxHighlighter>
           ) : (
-            <code className="bg-s3 text-brand px-1 py-0.5 rounded font-mono text-[11px]" {...props}>
+            <code className="bg-s3 text-t1 px-1 py-0.5 rounded font-mono text-[11px]" {...props}>
               {children}
             </code>
           )
@@ -122,7 +121,7 @@ const MarkdownMessage: React.FC<{ content: string }> = ({ content }) => (
               href={href}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-brand hover:text-brand/80 underline underline-offset-2 decoration-brand/40"
+              className="text-brand hover:opacity-80 underline underline-offset-2 decoration-brand/40"
             >
               {children}
             </a>
@@ -141,35 +140,30 @@ const MarkdownMessage: React.FC<{ content: string }> = ({ content }) => (
   </div>
 )
 
-// 引用溯源卡片：RAG 命中的知识库片段
+// 引用溯源：RAG 命中的知识库片段（幽灵折叠行，不打断阅读）
 const SourceCards: React.FC<{ sources: MessageSource[] }> = ({ sources }) => {
   const [open, setOpen] = useState(false)
   if (sources.length === 0) return null
   return (
-    <div className="mt-3 rounded-xl border border-line bg-s4/40 overflow-hidden">
+    <div className="mt-1.5">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-s3/50 transition-colors"
+        className="flex items-center gap-1.5 px-2 -mx-2 py-1 rounded-lg text-xs text-t3 hover:text-t1 hover:bg-s3 transition-colors"
       >
-        <span className="flex items-center gap-1.5 text-[10px] font-mono text-brand tracking-wider">
-          <BookMarked className="w-3 h-3" />
-          内容溯源 · {sources.length} 个知识库片段
-        </span>
-        <span className="text-[10px] font-mono text-t4">{open ? '收起' : '展开'}</span>
+        <BookMarked className="w-3.5 h-3.5" />
+        {sources.length} 个知识库来源
+        <ChevronDown className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
-        <div className="px-3 pb-3 space-y-2 fade-in">
+        <div className="mt-1.5 space-y-1.5 fade-in">
           {sources.map((s, i) => (
-            <div
-              key={`${s.documentId}-${i}`}
-              className="p-2.5 rounded-lg bg-s3/60 border border-line/60"
-            >
+            <div key={`${s.documentId}-${i}`} className="p-2.5 rounded-xl bg-s2 border border-line">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-semibold text-t2 truncate">
+                <span className="text-xs font-medium text-t1 truncate">
                   {s.documentName}
                   {s.sectionPath ? ` · ${s.sectionPath}` : ''}
                 </span>
-                <span className="text-[9px] font-mono text-brand shrink-0">相关度 {s.score}</span>
+                <span className="text-[10px] text-t4 shrink-0 tabular-nums">相关度 {s.score}</span>
               </div>
               <p className="text-[11px] text-t3 mt-1 leading-relaxed line-clamp-3">{s.content}</p>
             </div>
@@ -188,41 +182,39 @@ const TOOL_META: Record<string, { label: string; icon: React.ReactNode }> = {
 
 // Agent 执行轨迹：工具调用步骤（检索/建单）可视化，生成中实时展示
 const AgentTrace: React.FC<{ steps: ToolTraceStep[]; live?: boolean }> = ({ steps, live }) => {
-  const [open, setOpen] = useState(live ?? true)
+  const [open, setOpen] = useState(live ?? false)
   if (steps.length === 0) return null
   return (
-    <div className="mt-3 rounded-xl border border-line bg-s4/40 overflow-hidden">
+    <div className="mb-1.5">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-s3/50 transition-colors"
+        className="flex items-center gap-1.5 px-2 -mx-2 py-1 rounded-lg text-xs text-t3 hover:text-t1 hover:bg-s3 transition-colors"
       >
-        <span className="flex items-center gap-1.5 text-[10px] font-mono text-signal tracking-wider">
-          <Wrench className="w-3 h-3" />
-          执行轨迹 · {steps.length} 步
-        </span>
-        <span className="text-[10px] font-mono text-t4">{open ? '收起' : '展开'}</span>
+        <Wrench className="w-3.5 h-3.5" />
+        {live ? '正在执行工具…' : `执行了 ${steps.length} 个步骤`}
+        <ChevronDown className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
-        <div className="px-3 pb-3 space-y-1.5 fade-in">
+        <div className="mt-1.5 space-y-1 fade-in">
           {steps.map((s, i) => {
             const meta = TOOL_META[s.tool] || {
               label: s.tool,
-              icon: <Wrench className="w-3 h-3" />,
+              icon: <Wrench className="w-3.5 h-3.5" />,
             }
             return (
               <div
                 key={i}
-                className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-s3/60 border border-line/60"
+                className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-s2 border border-line"
               >
                 <span className="text-t3 shrink-0">{meta.icon}</span>
-                <span className="text-[11px] text-t2 font-medium shrink-0">{meta.label}</span>
+                <span className="text-xs text-t2 font-medium shrink-0">{meta.label}</span>
                 {s.summary && (
-                  <span className="text-[10px] font-mono text-t4 truncate flex-1">{s.summary}</span>
+                  <span className="text-[11px] text-t4 truncate flex-1">{s.summary}</span>
                 )}
                 {s.status === 'start' ? (
-                  <Loader2 className="w-3 h-3 text-signal animate-spin shrink-0" />
+                  <Loader2 className="w-3.5 h-3.5 text-t3 animate-spin shrink-0" />
                 ) : (
-                  <Check className="w-3 h-3 text-brand shrink-0" />
+                  <Check className="w-3.5 h-3.5 text-t3 shrink-0" />
                 )}
               </div>
             )
@@ -259,32 +251,28 @@ const MessageFeedbackBar: React.FC<{
   }
 
   return (
-    <div className="mt-2">
-      <div className="flex items-center gap-1">
+    <div className="mt-1.5">
+      <div className="flex items-center gap-0.5">
         <button
           onClick={clickUp}
           title="回答有帮助"
-          className={`p-1 rounded-md border transition-colors ${
-            feedback === 'up'
-              ? 'text-brand border-brand/40 bg-brand/10'
-              : 'text-t4 border-transparent hover:text-t2 hover:bg-s3'
+          className={`p-1.5 rounded-lg transition-colors ${
+            feedback === 'up' ? 'text-t1 bg-s3' : 'text-t4 hover:text-t1 hover:bg-s3'
           }`}
         >
-          <ThumbsUp className="w-3 h-3" />
+          <ThumbsUp className="w-3.5 h-3.5" />
         </button>
         <button
           onClick={clickDown}
           title="回答没帮助"
-          className={`p-1 rounded-md border transition-colors ${
-            feedback === 'down'
-              ? 'text-rose-300 border-rose-500/40 bg-rose-500/10'
-              : 'text-t4 border-transparent hover:text-t2 hover:bg-s3'
+          className={`p-1.5 rounded-lg transition-colors ${
+            feedback === 'down' ? 'text-t1 bg-s3' : 'text-t4 hover:text-t1 hover:bg-s3'
           }`}
         >
-          <ThumbsDown className="w-3 h-3" />
+          <ThumbsDown className="w-3.5 h-3.5" />
         </button>
         {feedback === 'down' && feedbackReason && !reasonOpen && (
-          <span className="ml-1 text-[9px] font-mono text-t4">
+          <span className="ml-1 text-[10px] text-t4">
             {FEEDBACK_REASON_OPTIONS.find((o) => o.value === feedbackReason)?.label}
           </span>
         )}
@@ -292,7 +280,7 @@ const MessageFeedbackBar: React.FC<{
       {/* 原因标签：可选，点任一即提交；「跳过」直接收起（👎 已记录） */}
       {reasonOpen && feedback === 'down' && (
         <div className="mt-1.5 flex items-center gap-1.5 flex-wrap fade-in">
-          <span className="text-[9px] font-mono text-t4">哪里不好？（可跳过）</span>
+          <span className="text-[11px] text-t4">哪里不好？（可跳过）</span>
           {FEEDBACK_REASON_OPTIONS.map((o) => (
             <button
               key={o.value}
@@ -300,10 +288,10 @@ const MessageFeedbackBar: React.FC<{
                 onVote('down', o.value)
                 setReasonOpen(false)
               }}
-              className={`px-1.5 py-0.5 rounded border text-[9px] font-mono transition-colors ${
+              className={`px-2 py-0.5 rounded-full border text-[11px] transition-colors ${
                 feedbackReason === o.value
-                  ? 'text-rose-300 border-rose-500/40 bg-rose-500/10'
-                  : 'text-t3 border-line hover:text-t2 hover:border-linestrong'
+                  ? 'text-t1 border-linestrong bg-s3'
+                  : 'text-t3 border-line hover:text-t1 hover:border-linestrong'
               }`}
             >
               {o.label}
@@ -311,7 +299,7 @@ const MessageFeedbackBar: React.FC<{
           ))}
           <button
             onClick={() => setReasonOpen(false)}
-            className="px-1.5 py-0.5 text-[9px] font-mono text-t4 hover:text-t2 transition-colors"
+            className="px-2 py-0.5 text-[11px] text-t4 hover:text-t1 transition-colors"
           >
             跳过
           </button>
@@ -326,17 +314,15 @@ const TicketNotice: React.FC<{ ticket: TicketRef; onOpen: () => void }> = ({ tic
   const dispatch = useDispatch()
   return (
     <div
-      className="mt-3 flex items-center justify-between gap-3 p-3 rounded-xl border border-signal/25 bg-signal/[0.06] fade-in cursor-pointer hover:border-signal/50 transition-colors"
+      className="mt-3 flex items-center justify-between gap-3 p-3 rounded-2xl border border-line bg-s2 fade-in cursor-pointer hover:border-linestrong transition-colors"
       onClick={onOpen}
     >
       <div className="flex items-center gap-2.5 min-w-0">
-        <div className="w-8 h-8 rounded-lg bg-signal/10 border border-signal/25 text-signal flex items-center justify-center shrink-0">
+        <div className="w-8 h-8 rounded-full bg-signal/10 text-signal flex items-center justify-center shrink-0">
           <TicketCheck className="w-4 h-4" />
         </div>
         <div className="min-w-0">
-          <p className="text-[10px] font-mono text-signal/80 tracking-wider">
-            已升级 · 自动创建工单
-          </p>
+          <p className="text-[11px] text-t3">已升级为人工工单</p>
           <p className="text-xs text-t1 font-semibold truncate mt-0.5">{ticket.title}</p>
         </div>
       </div>
@@ -346,7 +332,7 @@ const TicketNotice: React.FC<{ ticket: TicketRef; onOpen: () => void }> = ({ tic
             e.stopPropagation()
             dispatch(setActiveTab('tickets'))
           }}
-          className="px-2.5 py-1.5 rounded-lg text-t3 hover:text-t1 text-[10px] font-mono border border-line hover:border-linestrong transition-colors"
+          className="px-2.5 py-1.5 rounded-full text-t2 hover:text-t1 text-[11px] border border-line hover:border-linestrong transition-colors"
         >
           工单页
         </button>
@@ -355,9 +341,9 @@ const TicketNotice: React.FC<{ ticket: TicketRef; onOpen: () => void }> = ({ tic
             e.stopPropagation()
             onOpen()
           }}
-          className="px-3 py-1.5 rounded-lg bg-signal/10 hover:bg-signal/20 border border-signal/30 hover:border-signal/50 text-signal text-[10px] font-mono shrink-0 transition-colors"
+          className="px-3 py-1.5 rounded-full bg-signal/15 hover:bg-signal/25 text-signal text-[11px] font-medium shrink-0 transition-colors"
         >
-          查看详情 →
+          查看详情
         </button>
       </div>
     </div>
@@ -385,13 +371,13 @@ const TicketConfirmCard: React.FC<{
   }
 
   return (
-    <div className="mt-3 p-4 rounded-xl border border-signal/30 bg-signal/[0.06] fade-in">
+    <div className="mt-3 p-4 rounded-2xl border border-line bg-s2 fade-in">
       <div className="flex items-center gap-2.5 mb-3">
-        <div className="w-8 h-8 rounded-lg bg-signal/10 border border-signal/25 text-signal flex items-center justify-center shrink-0">
+        <div className="w-8 h-8 rounded-full bg-signal/10 text-signal flex items-center justify-center shrink-0">
           <ShieldQuestion className="w-4 h-4" />
         </div>
         <div className="min-w-0">
-          <p className="text-[10px] font-mono text-signal/80 tracking-wider">
+          <p className="text-[11px] text-t3">
             确认创建工单 · 优先级 {pr}
             {cg ? ` · ${cg}` : ''}
           </p>
@@ -403,7 +389,7 @@ const TicketConfirmCard: React.FC<{
       </p>
       <div className="flex items-center justify-end gap-2 mt-3.5">
         {draft.resolved ? (
-          <span className="text-[10px] font-mono text-t4">
+          <span className="text-[11px] text-t4">
             {draft.approved ? '已确认创建' : '已拒绝，AI 将继续对话'}
           </span>
         ) : (
@@ -411,14 +397,14 @@ const TicketConfirmCard: React.FC<{
             <button
               onClick={() => decide(false)}
               disabled={busy}
-              className="px-3.5 py-1.5 rounded-lg text-t3 hover:text-t1 text-[11px] font-mono border border-line hover:border-linestrong transition-colors disabled:opacity-50"
+              className="px-3.5 py-1.5 rounded-full text-t2 hover:text-t1 text-xs border border-line hover:border-linestrong transition-colors disabled:opacity-50"
             >
               暂不创建
             </button>
             <button
               onClick={() => decide(true)}
               disabled={busy}
-              className="px-4 py-1.5 rounded-lg bg-signal/15 hover:bg-signal/25 border border-signal/40 hover:border-signal/60 text-signal text-[11px] font-mono transition-colors disabled:opacity-50 flex items-center gap-1.5"
+              className="px-4 py-1.5 rounded-full bg-signal hover:brightness-110 text-white text-xs font-medium transition-all disabled:opacity-50 flex items-center gap-1.5"
             >
               {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
               确认创建
@@ -430,13 +416,16 @@ const TicketConfirmCard: React.FC<{
   )
 }
 
-// 空状态的建议提问
+// 空状态的建议提问（贴合 IT 服务台场景）
 const SUGGESTIONS = [
-  '解释 Monorepo 与 Turborepo 的增量构建原理',
-  '帮我设计 Prisma 的多租户数据模型',
-  'NestJS 中如何实现 SSE 流式响应？',
-  '对比 Redis 缓存与内存缓存的取舍',
+  '忘记域账号密码，如何重置？',
+  '办公区 Wi-Fi 连不上怎么排查？',
+  '如何申请安装设计类软件？',
+  'VPN 权限申请的流程是什么？',
 ]
+
+// 可选模型（与后端 OpenAI 兼容服务配置对应）
+const MODELS = ['glm-4.5-air', 'glm-4.6v', 'glm-4.7', 'DeepSeek-V4-flash']
 
 export const ChatPage: React.FC = () => {
   const dispatch = useDispatch()
@@ -447,14 +436,20 @@ export const ChatPage: React.FC = () => {
   const [input, setInput] = useState('')
   const [showThinking, setShowThinking] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
+  const [modelOpen, setModelOpen] = useState(false)
   const [promptList, setPromptList] = useState<PromptItem[]>([])
   const [liveTrace, setLiveTrace] = useState<ToolTraceStep[]>([])
   const [ticketDetailId, setTicketDetailId] = useState<string | null>(null)
+  // 本轮待发送的对话附件（已上传落盘，发送时随请求注入上下文）
+  const [pendingAtts, setPendingAtts] = useState<ChatAttachmentBrief[]>([])
+  const [attUploading, setAttUploading] = useState(false)
+  const attInputRef = useRef<HTMLInputElement>(null)
   // HITL 建单确认卡（Agent 暂停中等待用户决定）
   const [confirmDraft, setConfirmDraft] = useState<
     (TicketDraft & { resolved: boolean; approved?: boolean }) | null
   >(null)
   const pickerRef = useRef<HTMLDivElement>(null)
+  const modelRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -504,15 +499,18 @@ export const ChatPage: React.FC = () => {
       .catch(() => {})
   }, [pickerOpen, promptList.length])
 
-  // 点击选择器外部时关闭
+  // 点击选择器外部时关闭（提示词 / 模型）
   useEffect(() => {
-    if (!pickerOpen) return
+    if (!pickerOpen && !modelOpen) return
     const onClick = (e: MouseEvent) => {
-      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) setPickerOpen(false)
+      if (pickerOpen && pickerRef.current && !pickerRef.current.contains(e.target as Node))
+        setPickerOpen(false)
+      if (modelOpen && modelRef.current && !modelRef.current.contains(e.target as Node))
+        setModelOpen(false)
     }
     document.addEventListener('mousedown', onClick)
     return () => document.removeEventListener('mousedown', onClick)
-  }, [pickerOpen])
+  }, [pickerOpen, modelOpen])
 
   const bufferRef = useRef({ id: '', sessionId: '', content: '' })
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -544,6 +542,10 @@ export const ChatPage: React.FC = () => {
     if (!currentChatId) return
     const existing = messagesBySession[currentChatId]
     if (existing && existing.length > 0) return
+    // 本轮刚创建的会话没有历史可拉：拉一次就用服务端的空快照盖掉刚乐观插入的用户气泡，
+    // 消息列表退回空 → 界面回到欢迎页，而 HITL 确认卡渲染在非空分支里 —— 确认门再也按不到，
+    // 生成器却正卡在门上。只读不清标记（流结束处还要用它刷新会话列表）
+    if (isNewSessionRef.current) return
     api
       .getMessages(currentChatId)
       .then((msgs) => {
@@ -561,6 +563,7 @@ export const ChatPage: React.FC = () => {
               }),
               model: m.model || undefined,
               sources: m.sources || undefined,
+              attachments: m.attachments || undefined,
               // 恢复已评价状态（重载页面后按钮仍高亮）
               feedback: m.feedback || null,
               feedbackReason: m.feedbackReason || null,
@@ -627,12 +630,14 @@ export const ChatPage: React.FC = () => {
   }, [])
 
   const handleStop = useCallback(() => {
+    // abort 只退订 SSE；取消后台泵要走 stop 端点（流与连接已解耦）
+    if (currentChatId) api.stopStream(currentChatId).catch(() => {})
     abortRef.current?.abort()
     abortRef.current = null
     flushBuffer()
     stopFlushTimer()
     dispatch(setIsGenerating(false))
-  }, [dispatch, flushBuffer, stopFlushTimer])
+  }, [dispatch, flushBuffer, stopFlushTimer, currentChatId])
 
   const isNearBottom = useCallback(() => {
     const el = messagesContainerRef.current
@@ -650,6 +655,61 @@ export const ChatPage: React.FC = () => {
     }
   }, [])
 
+  // 附件必须挂在会话上：无当前会话时先建（与发送同一路径），
+  // 新建标记同置位，首条回答到达时才会用提问内容重命名
+  const ensureSessionId = useCallback(async (): Promise<string | null> => {
+    if (currentChatId) return currentChatId
+    try {
+      const chat = await api.createChat()
+      isNewSessionRef.current = true
+      dispatch(setCurrentChat(chat.id))
+      dispatch(
+        setSessions([
+          { id: chat.id, title: chat.title, date: chat.date, pinned: chat.pinned },
+          ...sessions,
+        ]),
+      )
+      return chat.id
+    } catch {
+      return null
+    }
+  }, [currentChatId, dispatch, sessions])
+
+  // 纸夹选文件：立即上传落盘，芯片进入待发送列表
+  const handlePickAttachment = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file || attUploading) return
+    const sessionId = await ensureSessionId()
+    if (!sessionId) return
+    setAttUploading(true)
+    try {
+      const brief = await api.uploadChatAttachment(sessionId, file, file.name)
+      setPendingAtts((prev) => [...prev, brief])
+    } catch {
+      // 上传失败不入芯片，用户可重试
+    } finally {
+      setAttUploading(false)
+    }
+  }
+
+  const handleRemoveAttachment = (att: ChatAttachmentBrief) => {
+    if (currentChatId) api.deleteChatAttachment(currentChatId, att.id).catch(() => {})
+    setPendingAtts((prev) => prev.filter((p) => p.id !== att.id))
+  }
+
+  // 历史消息里的附件芯片：下载字节转 object URL 打开
+  const openAttachment = async (sessionId: string, a: ChatAttachmentBrief) => {
+    try {
+      const blob = await api.downloadChatAttachment(sessionId, a.id)
+      const url = URL.createObjectURL(blob)
+      window.open(url, '_blank')
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    } catch {
+      // 字节丢失时不假装打开
+    }
+  }
+
   // 内容变化时仅在贴近底部时跟随滚动，避免用户回看历史时被强制拉回；
   // 生成中用瞬时滚动，平滑动画追不上快速增长的流式内容
   useEffect(() => {
@@ -666,26 +726,13 @@ export const ChatPage: React.FC = () => {
       e.preventDefault()
       if (!input.trim() || isGenerating) return
 
-      let sessionId = currentChatId
-      if (!sessionId) {
-        try {
-          const chat = await api.createChat()
-          sessionId = chat.id
-          isNewSessionRef.current = true
-          dispatch(setCurrentChat(chat.id))
-          dispatch(
-            setSessions([
-              { id: chat.id, title: chat.title, date: chat.date, pinned: chat.pinned },
-              ...sessions,
-            ]),
-          )
-        } catch {
-          return
-        }
-      }
+      let sessionId = await ensureSessionId()
+      if (!sessionId) return
 
       const userMsg = input.trim()
+      const atts = pendingAtts
       setInput('')
+      setPendingAtts([])
       // 新一轮提问：清空上一轮的建单确认卡
       setConfirmDraft(null)
 
@@ -697,6 +744,7 @@ export const ChatPage: React.FC = () => {
           role: 'user',
           content: userMsg,
           timestamp: ts,
+          attachments: atts.length > 0 ? atts : undefined,
         }),
       )
 
@@ -719,6 +767,7 @@ export const ChatPage: React.FC = () => {
             model: selectedModel,
             useRag: true,
             systemPrompt: activePrompt?.content,
+            attachments: atts.length > 0 ? atts.map((a) => a.id) : undefined,
           },
           controller.signal,
         )) {
@@ -879,6 +928,8 @@ export const ChatPage: React.FC = () => {
       activePrompt,
       currentChatId,
       sessions,
+      pendingAtts,
+      ensureSessionId,
       flushBuffer,
       stopFlushTimer,
       startFlushTimer,
@@ -891,30 +942,26 @@ export const ChatPage: React.FC = () => {
     <div className="flex flex-col h-full">
       <div ref={messagesContainerRef} className="flex-1 overflow-y-auto">
         {isEmpty ? (
-          /* ===== 空状态：引导台 ===== */
-          <div className="h-full flex flex-col items-center justify-center px-6">
-            <div className="relative rise-in">
-              <div className="absolute -inset-6 rounded-full bg-brand/10 blur-2xl" />
-              <div className="relative w-16 h-16 rounded-2xl bg-gradient-to-br from-emerald-400 to-teal-600 flex items-center justify-center shadow-xl shadow-emerald-500/30">
-                <Activity className="w-8 h-8 text-brand-on" strokeWidth={2.2} />
-              </div>
+          /* ===== 空状态：印章 + 衬线问候 + 建议提问 ===== */
+          <div className="h-full flex flex-col items-center justify-center px-6 pb-8">
+            <div className="rise-in w-12 h-12 rounded-2xl bg-s2 border border-line shadow-sm flex items-center justify-center">
+              <span className="font-display text-xl font-bold text-brand">台</span>
             </div>
             <h2
-              className="rise-in font-display text-xl font-bold text-t1 mt-6 tracking-tight"
-              style={{ animationDelay: '90ms' }}
+              className="rise-in font-display text-[28px] leading-snug font-semibold text-t1 mt-6 tracking-wide text-center"
+              style={{ animationDelay: '80ms' }}
             >
-              ServiceDeck 智能服务台助手
+              今天想解决什么问题？
             </h2>
             <p
-              className="rise-in font-mono text-[11px] text-t3 mt-2 tracking-wider"
-              style={{ animationDelay: '150ms' }}
+              className="rise-in text-sm text-t3 mt-3 max-w-md text-center leading-relaxed"
+              style={{ animationDelay: '140ms' }}
             >
-              流式通道就绪 · 输入指令开始对话
+              AI 会先检索企业知识库并给出带出处的解答；超出范围时，经你确认自动升级为人工工单。
             </p>
-
             <div
-              className="rise-in grid grid-cols-2 gap-2.5 mt-8 w-full max-w-xl"
-              style={{ animationDelay: '220ms' }}
+              className="rise-in flex flex-wrap justify-center gap-2 mt-8 max-w-2xl"
+              style={{ animationDelay: '200ms' }}
             >
               {SUGGESTIONS.map((s) => (
                 <button
@@ -923,9 +970,8 @@ export const ChatPage: React.FC = () => {
                     setInput(s)
                     textareaRef.current?.focus()
                   }}
-                  className="text-left px-3.5 py-3 rounded-xl panel card-hover text-xs text-t3 hover:text-t1 leading-relaxed flex items-start gap-2"
+                  className="px-3.5 py-2 rounded-full border border-line bg-s2 text-xs text-t2 hover:text-t1 hover:border-linestrong transition-colors"
                 >
-                  <Terminal className="w-3 h-3 mt-0.5 text-brand/70 shrink-0" />
                   {s}
                 </button>
               ))}
@@ -933,211 +979,151 @@ export const ChatPage: React.FC = () => {
           </div>
         ) : (
           /* ===== 消息流 ===== */
-          <div className="max-w-3xl mx-auto px-6 py-6 space-y-6">
+          <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
             {messages.map((msg) =>
               msg.role === 'user' ? (
-                /* 用户消息：右对齐气泡 */
-                <div key={msg.id} className="flex items-start gap-3 justify-end rise-in">
-                  <div className="max-w-[75%] rounded-2xl rounded-tr-md bg-brand/10 border border-brand/20 px-4 py-3">
-                    <div className="flex items-center justify-end gap-2 mb-1">
-                      <span className="text-[10px] text-t3">{msg.timestamp}</span>
-                      <span className="text-[10px] font-mono text-brand/80">你</span>
-                    </div>
-                    <p className="whitespace-pre-wrap leading-relaxed text-sm text-t1">
+                /* 用户消息：右对齐圆角气泡，无头像 */
+                <div key={msg.id} className="flex justify-end rise-in">
+                  <div className="max-w-[80%] rounded-2xl bg-s2 border border-line px-4 py-2.5">
+                    {msg.attachments && msg.attachments.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mb-1.5">
+                        {msg.attachments.map((a) => (
+                          <button
+                            key={a.id}
+                            onClick={() => openAttachment(msg.sessionId, a)}
+                            className="flex items-center gap-1 px-2 py-1 rounded-lg bg-s3 text-[10px] text-t2 hover:text-t1 transition-colors max-w-full"
+                            title={`下载 ${a.name}`}
+                          >
+                            <Paperclip className="w-3 h-3 shrink-0" />
+                            <span className="truncate">{a.name}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <p className="whitespace-pre-wrap leading-relaxed text-[15px] text-t1">
                       {msg.content}
                     </p>
                   </div>
-                  <div className="w-8 h-8 rounded-lg bg-s3 border border-line flex items-center justify-center shrink-0 text-t2">
-                    <User className="w-4 h-4" />
-                  </div>
                 </div>
               ) : (
-                /* AI 消息：平铺式，突出内容与模型标识 */
-                <div key={msg.id} className="flex items-start gap-3 rise-in">
-                  <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-400/90 to-teal-600/90 flex items-center justify-center shrink-0 shadow-md shadow-emerald-500/20">
-                    <Bot className="w-4 h-4 text-brand-on" />
-                  </div>
-                  <div className="flex-1 min-w-0 pt-0.5">
-                    <div className="flex items-center gap-2 mb-1.5">
-                      <span className="text-[10px] font-mono text-brand/90 tracking-wide">
-                        {msg.model || '智能助手'}
+                /* AI 消息：通栏平铺，无头像无标签，阅读优先 */
+                <div key={msg.id} className="rise-in">
+                  {/* 非流式回退：有 RAG 但没跑工具循环，不标注会被当成有升级保障的回答 */}
+                  {msg.degraded && (
+                    <div className="mb-2">
+                      <span
+                        className="inline-block px-2 py-0.5 rounded-full text-[11px] border border-line bg-s2 text-t3"
+                        title="实时通道中断，已改用一次性返回：仍基于知识库作答，但不会自动升级工单"
+                      >
+                        降级回答 · 不会自动升级工单
                       </span>
-                      <span className="w-1 h-1 rounded-full bg-linestrong" />
-                      <span className="text-[10px] text-t3">{msg.timestamp}</span>
-                      {/* 非流式回退：有 RAG 但没跑工具循环，不标注会被当成有升级保障的回答 */}
-                      {msg.degraded && (
-                        <span
-                          className="px-1.5 py-0.5 rounded-md text-[10px] font-mono border border-amber-500/30 bg-amber-500/10 text-amber-300"
-                          title="实时通道中断，已改用一次性返回：仍基于知识库作答，但不会自动升级工单"
-                        >
-                          降级回答 · 不会自动升级工单
-                        </span>
-                      )}
                     </div>
-                    {msg.toolTrace && msg.toolTrace.length > 0 && (
-                      <AgentTrace steps={msg.toolTrace} />
-                    )}
-                    <div className="text-sm text-t2">
-                      <MarkdownMessage content={msg.content} />
-                      {isGenerating &&
-                        msg.id === messages[messages.length - 1].id &&
-                        !showThinking && <span className="stream-cursor" />}
-                    </div>
-                    {msg.ticketRef && (
-                      <TicketNotice
-                        ticket={msg.ticketRef}
-                        onOpen={() => setTicketDetailId(msg.ticketRef!.id)}
-                      />
-                    )}
-                    {msg.sources && msg.sources.length > 0 && <SourceCards sources={msg.sources} />}
-                    {/* 满意度反馈：生成中的最后一条不显示（回答未完成无从评价） */}
-                    {!(isGenerating && msg.id === messages[messages.length - 1].id) && (
-                      <MessageFeedbackBar
-                        feedback={msg.feedback}
-                        feedbackReason={msg.feedbackReason}
-                        onVote={(feedback, reason) => handleVote(msg.id, feedback, reason)}
-                      />
-                    )}
+                  )}
+                  {msg.toolTrace && msg.toolTrace.length > 0 && (
+                    <AgentTrace steps={msg.toolTrace} />
+                  )}
+                  <div
+                    className="text-[15px] text-t1"
+                    title={`${msg.model || '智能助手'} · ${msg.timestamp}`}
+                  >
+                    <MarkdownMessage content={msg.content} />
+                    {isGenerating &&
+                      msg.id === messages[messages.length - 1].id &&
+                      !showThinking && <span className="stream-cursor" />}
                   </div>
+                  {msg.ticketRef && (
+                    <TicketNotice
+                      ticket={msg.ticketRef}
+                      onOpen={() => setTicketDetailId(msg.ticketRef!.id)}
+                    />
+                  )}
+                  {msg.sources && msg.sources.length > 0 && <SourceCards sources={msg.sources} />}
+                  {/* 满意度反馈：生成中的最后一条不显示（回答未完成无从评价） */}
+                  {!(isGenerating && msg.id === messages[messages.length - 1].id) && (
+                    <MessageFeedbackBar
+                      feedback={msg.feedback}
+                      feedbackReason={msg.feedbackReason}
+                      onVote={(feedback, reason) => handleVote(msg.id, feedback, reason)}
+                    />
+                  )}
                 </div>
               ),
             )}
 
-            {/* HITL 建单确认卡：Agent 暂停中等待用户决定（决定后继续生成） */}
-            {confirmDraft && (
-              <div className="flex items-start gap-3 fade-in">
-                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-400/90 to-teal-600/90 flex items-center justify-center shrink-0">
-                  <Bot className="w-4 h-4 text-brand-on" />
-                </div>
-                <div className="pt-1 flex-1 min-w-0">
-                  <TicketConfirmCard draft={confirmDraft} onDecide={handleConfirmDecision} />
-                </div>
-              </div>
-            )}
-
             {/* 思考中：Agent 轨迹实时展示 + 推理指示 */}
             {isGenerating && showThinking && (
-              <div className="flex items-start gap-3 fade-in">
-                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-400/90 to-teal-600/90 flex items-center justify-center shrink-0 animate-pulse">
-                  <Bot className="w-4 h-4 text-brand-on" />
-                </div>
-                <div className="pt-1 flex-1 min-w-0 space-y-2">
-                  <div className="flex items-center gap-2.5">
-                    <div className="flex items-center gap-1">
-                      <span className="thinking-dot" />
-                      <span className="thinking-dot" style={{ animationDelay: '0.15s' }} />
-                      <span className="thinking-dot" style={{ animationDelay: '0.3s' }} />
-                    </div>
-                    <span className="text-[11px] font-mono text-t3 tracking-wider">
-                      {liveTrace.length > 0
-                        ? '工具执行中...'
-                        : `${selectedModel.toUpperCase()} 正在推理...`}
-                    </span>
+              <div className="fade-in space-y-2">
+                <div className="flex items-center gap-2.5">
+                  <div className="flex items-center gap-1">
+                    <span className="thinking-dot" />
+                    <span className="thinking-dot" style={{ animationDelay: '0.15s' }} />
+                    <span className="thinking-dot" style={{ animationDelay: '0.3s' }} />
                   </div>
-                  {liveTrace.length > 0 && <AgentTrace steps={liveTrace} live />}
+                  <span className="text-xs text-t3">
+                    {liveTrace.length > 0 ? '正在执行工具…' : '正在思考…'}
+                  </span>
                 </div>
+                {liveTrace.length > 0 && <AgentTrace steps={liveTrace} live />}
               </div>
             )}
             <div ref={messagesEndRef} />
           </div>
         )}
+
+        {/*
+          HITL 建单确认卡：刻意放在欢迎页/消息列表两个分支之外。
+          Agent 是停在确认门上才产出正文的，此刻消息列表可能还是空的（首条提问尚未落库）；
+          卡若在非空分支里，用户既看不到门也点不到门，而生成器会一直等到确认窗口超时。
+        */}
+        {confirmDraft && (
+          <div className="fade-in max-w-3xl mx-auto px-1">
+            <TicketConfirmCard draft={confirmDraft} onDecide={handleConfirmDecision} />
+          </div>
+        )}
       </div>
 
-      {/* ===== 输入台 ===== */}
-      <div className="px-6 pb-4 pt-2">
+      {/* ===== 输入器：ChatGPT 式胶囊 Composer ===== */}
+      <div className="px-4 pb-3 pt-1">
         <form onSubmit={handleSend} className="max-w-3xl mx-auto">
           {isGenerating && (
             <div className="flex justify-center pb-2.5">
               <button
                 type="button"
                 onClick={handleStop}
-                className="px-3.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 text-[11px] font-mono flex items-center gap-1.5 transition-colors border border-rose-500/25"
+                className="px-3 py-1 rounded-full bg-s2 border border-line text-t2 hover:text-t1 hover:border-linestrong text-xs flex items-center gap-1.5 transition-colors"
               >
-                <Square className="w-2.5 h-2.5 fill-rose-500" />
+                <Square className="w-2.5 h-2.5 fill-current" />
                 停止生成
               </button>
             </div>
           )}
-          {/* 已注入的提示词 chip */}
-          {activePrompt && (
-            <div className="fade-in flex justify-center pb-2.5">
-              <div className="flex items-center gap-2 pl-3 pr-1.5 py-1 rounded-full bg-brand/10 border border-brand/30 max-w-full">
-                <Sparkles className="w-3 h-3 text-brand shrink-0" />
-                <span className="text-[11px] text-brand font-mono truncate">
-                  角色 · {activePrompt.title}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => dispatch(clearActivePrompt())}
-                  className="p-0.5 rounded-full text-brand/70 hover:text-brand hover:bg-brand/20 transition-colors shrink-0"
-                  title="移除注入"
+          {/* 待发送附件芯片 */}
+          {pendingAtts.length > 0 && (
+            <div className="fade-in flex flex-wrap gap-1.5 pb-2">
+              {pendingAtts.map((a) => (
+                <span
+                  key={a.id}
+                  className="flex items-center gap-1.5 pl-2.5 pr-1 py-1 rounded-full bg-s2 border border-line text-[11px] text-t2 max-w-[240px]"
                 >
-                  <X className="w-3 h-3" />
-                </button>
-              </div>
+                  <Paperclip className="w-3 h-3 text-t4 shrink-0" />
+                  <span className="truncate">{a.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveAttachment(a)}
+                    className="p-0.5 rounded-full text-t4 hover:text-t1 hover:bg-s3 transition-colors shrink-0"
+                    title="移除附件"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              ))}
             </div>
           )}
           <div
-            className={`relative rounded-2xl panel transition-all duration-300 p-2 gap-2 flex items-end focus-within:border-brand/50 focus-within:shadow-[0_0_0_1px_var(--brand-ring),0_8px_30px_-12px_var(--brand-glow)] ${
+            className={`relative rounded-2xl bg-s2 border border-line shadow-sm transition-colors focus-within:border-linestrong ${
               isGenerating ? 'scanline' : ''
             }`}
           >
-            {/* 提示词选择器 */}
-            <div ref={pickerRef} className="relative shrink-0">
-              {pickerOpen && (
-                <div className="absolute bottom-full left-0 mb-2 w-72 rounded-xl panel border border-line shadow-2xl shadow-black/50 overflow-hidden rise-in z-20">
-                  <div className="px-3 py-2 border-b border-line">
-                    <span className="text-[10px] font-mono text-brand/70">注入提示词</span>
-                  </div>
-                  <div className="max-h-60 overflow-y-auto py-1">
-                    {promptList.length === 0 ? (
-                      <div className="px-3 py-4 text-center text-[11px] font-mono text-t4">
-                        暂无提示词 · 去提示词广场创建
-                      </div>
-                    ) : (
-                      promptList.map((p) => (
-                        <button
-                          key={p.id}
-                          type="button"
-                          onClick={() => {
-                            dispatch(
-                              setActivePrompt({ id: p.id, title: p.title, content: p.content }),
-                            )
-                            setPickerOpen(false)
-                          }}
-                          className={`w-full text-left px-3 py-2.5 hover:bg-s3 transition-colors flex items-center gap-2.5 ${
-                            p.id === activePrompt?.id ? 'bg-brand/10' : ''
-                          }`}
-                        >
-                          <span
-                            className={`w-1 h-1 rounded-full shrink-0 ${
-                              p.id === activePrompt?.id ? 'bg-brand' : 'bg-linestrong'
-                            }`}
-                          />
-                          <span className="text-xs text-t2 truncate flex-1">{p.title}</span>
-                          <span className="text-[9px] font-mono text-t4 shrink-0">
-                            {p.category}
-                          </span>
-                        </button>
-                      ))
-                    )}
-                  </div>
-                </div>
-              )}
-              <button
-                type="button"
-                onClick={() => setPickerOpen((v) => !v)}
-                className={`p-2 rounded-lg transition-colors ${
-                  activePrompt
-                    ? 'text-brand bg-brand/10 hover:bg-brand/20'
-                    : 'text-t3 hover:text-t1 hover:bg-s3'
-                }`}
-                title="注入提示词角色"
-              >
-                <Sparkles className="w-4 h-4" />
-              </button>
-            </div>
-
             <textarea
               ref={textareaRef}
               value={input}
@@ -1148,33 +1134,169 @@ export const ChatPage: React.FC = () => {
                   handleSend(e)
                 }
               }}
-              placeholder="向智能助手发送指令..."
+              placeholder="描述你遇到的问题…"
               rows={1}
-              className="flex-1 bg-transparent border-none text-sm text-t1 placeholder:text-t4 focus:outline-none px-1 resize-none overflow-y-auto leading-relaxed"
+              className="w-full bg-transparent border-none text-[15px] text-t1 placeholder:text-t4 focus:outline-none px-4 pt-3 pb-1 resize-none overflow-y-auto leading-relaxed"
               style={{
                 boxSizing: 'border-box',
-                minHeight: '32px',
+                minHeight: '24px',
                 maxHeight: '192px',
-                lineHeight: '20px',
-                padding: '6px 4px',
+                lineHeight: '22px',
               }}
             />
-            <button
-              type="submit"
-              disabled={!input.trim() || isGenerating}
-              className="p-2.5 rounded-xl bg-brand-strong hover:brightness-110 disabled:opacity-30 text-brand-on transition-all shadow-md shadow-emerald-500/25 shrink-0"
-              title="发送"
-            >
-              <ArrowDown className="w-4 h-4" strokeWidth={2.5} />
-            </button>
+            {/* 坞内工具条：附件 / 提示词注入 / 角色 chip / 模型 / 发送 */}
+            <div className="flex items-center gap-1.5 px-2.5 pb-2.5 pt-1">
+              {/* 对话附件纸夹 */}
+              <button
+                type="button"
+                onClick={() => attInputRef.current?.click()}
+                disabled={attUploading || isGenerating}
+                className="p-1.5 rounded-lg text-t3 hover:text-t1 hover:bg-s3 transition-colors shrink-0 disabled:opacity-50"
+                title="添加附件（日志/截图等；文本类 Agent 可读全文）"
+              >
+                {attUploading ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Paperclip className="w-4 h-4" />
+                )}
+              </button>
+              <input
+                ref={attInputRef}
+                type="file"
+                className="hidden"
+                onChange={handlePickAttachment}
+              />
+              {/* 提示词选择器 */}
+              <div ref={pickerRef} className="relative shrink-0">
+                {pickerOpen && (
+                  <div className="absolute bottom-full left-0 mb-2 w-72 rounded-xl bg-s2 border border-line shadow-xl fade-in overflow-hidden z-20">
+                    <div className="px-3 py-2 border-b border-line">
+                      <span className="text-[11px] text-t3">注入提示词</span>
+                    </div>
+                    <div className="max-h-60 overflow-y-auto py-1">
+                      {promptList.length === 0 ? (
+                        <div className="px-3 py-4 text-center text-[11px] text-t4">
+                          暂无提示词 · 去提示词广场创建
+                        </div>
+                      ) : (
+                        promptList.map((p) => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => {
+                              dispatch(
+                                setActivePrompt({ id: p.id, title: p.title, content: p.content }),
+                              )
+                              setPickerOpen(false)
+                            }}
+                            className={`w-full text-left px-3 py-2.5 hover:bg-s3 transition-colors flex items-center gap-2.5 ${
+                              p.id === activePrompt?.id ? 'bg-s3' : ''
+                            }`}
+                          >
+                            <span
+                              className={`w-1 h-1 rounded-full shrink-0 ${
+                                p.id === activePrompt?.id ? 'bg-brand' : 'bg-linestrong'
+                              }`}
+                            />
+                            <span className="text-xs text-t2 truncate flex-1">{p.title}</span>
+                            <span className="text-[10px] text-t4 shrink-0">{p.category}</span>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setPickerOpen((v) => !v)}
+                  className={`p-1.5 rounded-lg transition-colors ${
+                    activePrompt
+                      ? 'text-brand bg-brand/10 hover:bg-brand/20'
+                      : 'text-t3 hover:text-t1 hover:bg-s3'
+                  }`}
+                  title="注入提示词角色"
+                >
+                  <Sparkles className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* 已注入的角色 chip */}
+              {activePrompt && (
+                <div className="fade-in flex items-center gap-1.5 pl-2.5 pr-1 py-1 rounded-full bg-s3 max-w-[38%]">
+                  <span className="text-[11px] text-t2 truncate">角色 · {activePrompt.title}</span>
+                  <button
+                    type="button"
+                    onClick={() => dispatch(clearActivePrompt())}
+                    className="p-0.5 rounded-full text-t4 hover:text-t1 hover:bg-s2 transition-colors shrink-0"
+                    title="移除注入"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              )}
+
+              <div className="flex-1" />
+
+              {/* 模型选择器 */}
+              <div ref={modelRef} className="relative shrink-0">
+                {modelOpen && (
+                  <div className="absolute bottom-full right-0 mb-2 w-52 rounded-xl bg-s2 border border-line shadow-xl fade-in overflow-hidden z-20 py-1">
+                    <div className="px-3 py-1.5 text-[11px] text-t4">切换模型</div>
+                    {MODELS.map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => {
+                          dispatch(setSelectedModel(m))
+                          setModelOpen(false)
+                        }}
+                        className="w-full px-3 py-1.5 flex items-center justify-between gap-2 text-xs text-t2 hover:bg-s3 transition-colors"
+                      >
+                        <span className="truncate">{m}</span>
+                        {m === selectedModel && (
+                          <Check className="w-3.5 h-3.5 text-brand shrink-0" />
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setModelOpen((o) => !o)}
+                  className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] text-t3 hover:text-t1 hover:bg-s3 transition-colors"
+                  title="选择模型"
+                >
+                  {selectedModel}
+                  <ChevronDown
+                    className={`w-3 h-3 transition-transform ${modelOpen ? 'rotate-180' : ''}`}
+                  />
+                </button>
+              </div>
+
+              {isGenerating ? (
+                <button
+                  type="button"
+                  onClick={handleStop}
+                  className="p-2 rounded-full bg-brand-strong text-brand-on transition-all shrink-0"
+                  title="停止生成"
+                >
+                  <Square className="w-3.5 h-3.5 fill-current" />
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  disabled={!input.trim()}
+                  className="p-2 rounded-full bg-brand-strong hover:brightness-110 disabled:opacity-30 text-brand-on transition-all shrink-0"
+                  title="发送"
+                >
+                  <ArrowUp className="w-4 h-4" strokeWidth={2.5} />
+                </button>
+              )}
+            </div>
           </div>
-          <div className="flex items-center justify-between px-2 pt-2 text-[10px] text-t4 font-mono">
-            <span>Enter 发送 · Shift+Enter 换行</span>
-            <span className="flex items-center gap-1.5">
-              <Send className="w-3 h-3" />
-              流式对话 · {selectedModel.toUpperCase()}
-            </span>
-          </div>
+          <p className="text-center text-[11px] text-t4 pt-2">
+            AI 生成的内容可能不准确，重要操作请以工单流程为准。
+          </p>
         </form>
       </div>
 

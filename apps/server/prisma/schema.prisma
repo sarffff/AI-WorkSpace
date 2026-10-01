@@ -62,6 +62,9 @@ model Message {
   role             String   // user, assistant, system
   model            String?
   sources          Json? // RAG 引用溯源（命中片段 + 得分 + 来源文档）
+  // 对话附件元数据（仅 user 消息）：[{id,name,size,mimeType}] 供前端渲染芯片；
+  // 字节在磁盘（ChatAttachment 行 + chat-attachment store），正文注入只进 LLM 上下文不落库
+  attachments      Json?
   promptTokens     Int? // 本次回答全部 LLM 调用的输入 token 数（工具循环/生成，不含后台摘要）
   completionTokens Int? // 输出 token 数
   // 答案满意度反馈（仅 assistant 消息）：up | down，NULL 为未评价。
@@ -99,6 +102,13 @@ model Ticket {
   // 副作用（AGENT_TRACE=off 就不落），业务事实不该寄生在可关的开关上。
   // 不建外键：会话可被用户删除，删掉会话不该抹掉工单的归属痕迹（统计要能追溯到历史）
   chatId     String?
+  // SLA 到期时刻：建单时按优先级阈值（urgent 4h/high 8h/normal 24h/low 48h）从创建时间折算，
+  // 优先级变更时对未完结工单重算。看板据此在「违约之前」预警，而不是只在事后统计达标率。
+  // 可空：迁移前的历史工单为 NULL（视作"未排期"，不参与违约判定，单列计数摆出来）。
+  dueAt      DateTime?
+  // SLA 通知阶段：null 未通知 | at_risk 已发濒临违约预警 | breached 已发违约通知。
+  // 定时扫描器据此保证每个阶段只推一次；工单完结后不再推进。
+  slaNotifyStage String?
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
@@ -113,6 +123,23 @@ model Ticket {
   @@index([createdAt])
   @@index([category])
   comments TicketComment[]
+  attachments TicketAttachment[]
+}
+
+// 工单附件：IT 支持里截图/日志/配置是第一现场证据。字节落盘（与知识库上传同一思路），
+// 这里只存元数据。uploaderId 不建外键（与 chatId 一致的实用取舍）：删用户不该连带抹掉
+// 工单证据；文件随工单删除级联清理（DB 行 onDelete Cascade，磁盘副本由服务端一并删）。
+model TicketAttachment {
+  id         String   @id @default(uuid())
+  ticketId   String
+  ticket     Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  uploaderId String
+  filename   String // 原始文件名（展示与下载用）
+  mimeType   String
+  size       Int
+  createdAt  DateTime @default(now())
+
+  @@index([ticketId])
 }
 
 // 工单时间线：坐席与创建者的往来评论 + 状态流转/受理/转派的系统事件自动记录
@@ -234,6 +261,30 @@ model KnowledgeChunk {
   @@index([parentId])
 }
 
+// 知识缺口台账：AI 升级掉、人工解决了的问题 = 库里缺的那篇文档。
+// 清单本身每次都能从工单重算出来，落库只为了记住**人对它的处置**（成文/不打算补/注明出处），
+// 所以 ticketId 唯一且同步时永不覆盖已有行 —— 坐席的决定不能被一次重算冲掉。
+// 不建外键：工单可被删，删单不该抹掉"这条缺口我们补过文档"的痕迹（与 Ticket.chatId 同理）。
+model KnowledgeGap {
+  id            String    @id @default(uuid())
+  ticketId      String    @unique
+  chatId        String? // 来源会话（溯源用，可空）
+  category      String
+  question      String    @db.VarChar(500)
+  reason        String // no_hit 库里没有 | hit_but_escalated 有却没解决 | unknown_hits 拿不到观测
+  hasSolution   Boolean   @default(false) // 升级后人工是否留下了处理结论
+  status        String    @default("open") // open 待补 | covered 已成文 | dismissed 不打算成文
+  closedBy      String? // 处置人
+  closedDocId   String? // 成文时引用的知识库文档（不建外键：文档会被重传/删除）
+  closeNote     String?   @db.VarChar(500)
+  closedAt      DateTime?
+  firstSeenAt   DateTime  @default(now()) // 这条缺口第一次被发现的时间
+  updatedAt     DateTime  @updatedAt
+
+  @@index([status, category])
+  @@index([firstSeenAt])
+}
+
 // 提示词：每用户独立的角色预设，可一键注入对话
 model Prompt {
   id        String   @id @default(uuid())
@@ -246,6 +297,39 @@ model Prompt {
   updatedAt DateTime @updatedAt
 
   @@index([userId])
+}
+
+// 站内通知：工单事件（新单待受理/状态变更）与 SLA 预警触达对应用户，前端轮询未读数。
+// 刻意不做推送通道：桌面形态本就在线轮询，为低频事件引入第二条长连接收益有限。
+// userId 不建外键（与 Memory.chatId 一致的实用取舍）：删用户不该让通知表产生级联写。
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  // ticket_created 新单待受理 | ticket_assigned 新指派 | ticket_status 状态变更
+  // | sla_at_risk 濒临违约 | sla_breached 已违约
+  type      String
+  title     String
+  body      String   @db.VarChar(500)
+  payload   Json? // 结构化上下文（ticketId 等），供前端点击跳转
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, read, createdAt])
+}
+
+// 对话附件：用户在会话里提交的截图/日志/配置等证据。字节落盘（与工单附件同一思路），
+// 此表存元数据；chatId/uploaderId 不建外键（与 TicketDraft 一致）：删会话不该产生级联写，
+// 字节清理由 deleteChat 路径显式负责。
+model ChatAttachment {
+  id         String   @id @default(uuid())
+  chatId     String
+  uploaderId String
+  name       String // 原始文件名（展示与类型判断用）
+  mimeType   String
+  size       Int
+  createdAt  DateTime @default(now())
+
+  @@index([chatId])
 }
 
 // 配置表，存储每个用户独立的 LLM provider 等可动态修改的配置项

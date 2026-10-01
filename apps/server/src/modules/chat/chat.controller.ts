@@ -9,11 +9,18 @@ import {
   Res,
   Header,
   UseGuards,
+  UseInterceptors,
+  UseFilters,
+  UploadedFile,
 } from '@nestjs/common'
+import { FileInterceptor } from '@nestjs/platform-express'
 import { Throttle } from '@nestjs/throttler'
 import { Response } from 'express'
 import { ChatService, AgentStreamEvent } from './chat.service'
 import { StreamSlotService } from './stream-slot.service'
+import { StreamSessionService } from './stream-session.service'
+import { MAX_CHAT_ATTACHMENT_BYTES } from './chat-attachment.store'
+import { UploadErrorFilter } from '../knowledge/upload-error.filter'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { UserId } from '../auth/user-id.decorator'
 
@@ -23,12 +30,23 @@ const streamRateLimit = parseInt(process.env.STREAM_RATE_LIMIT_PER_MIN ?? '', 10
 const STREAM_RATE_LIMIT =
   Number.isFinite(streamRateLimit) && streamRateLimit > 0 ? streamRateLimit : 20
 
+// AgentStreamEvent → SSE data 帧载荷（与前端解析形状一致）
+function serializeEvent(evt: AgentStreamEvent): Record<string, unknown> {
+  if (evt.type === 'content') return { content: evt.text }
+  if (evt.type === 'sources') return { sources: evt.sources }
+  if (evt.type === 'tool') return { tool: evt.step }
+  if (evt.type === 'ticket') return { ticket: evt.ticket }
+  if (evt.type === 'confirm_required') return { confirm: evt.draft }
+  return {}
+}
+
 @Controller('chats')
 @UseGuards(JwtAuthGuard)
 export class ChatController {
   constructor(
     private readonly chatService: ChatService,
     private readonly slots: StreamSlotService,
+    private readonly sessions: StreamSessionService,
   ) {}
 
   // ===== 会话管理 =====
@@ -96,115 +114,198 @@ export class ChatController {
     return { success: true, data: reply, sources }
   }
 
-  // 流式对话（SSE），逐 token 推送
+  // 流式对话（SSE）：生成与连接解耦 —— pump 后台消费 Agent 生成器写入会话缓冲，
+  // 本端点只是订阅者：断连不退订泵，重连带 afterSeq 回放错过的事件（SSE resume）；
+  // 显式中断走 POST :id/stop
   @Post(':id/completions/stream')
   @Header('Cache-Control', 'no-cache')
   @Throttle({ default: { limit: STREAM_RATE_LIMIT, ttl: 60_000 } })
   async streamCompletions(
     @UserId() userId: string,
     @Param('id') id: string,
-    @Body() body: { prompt: string; model?: string; useRag?: boolean; systemPrompt?: string },
+    @Body()
+    body: {
+      prompt?: string
+      model?: string
+      useRag?: boolean
+      systemPrompt?: string
+      attachments?: string[]
+      resume?: boolean
+      afterSeq?: number
+    },
     @Res() res: Response,
   ) {
-    // 用量闸门同样必须在切到 SSE 之前（且放在占槽之前，拒掉就不用归还任何东西）：
-    // 客户端要能分清「今天预算用尽」和「回答出错」，前者重试也没用
-    await this.chatService.assertTokenBudget(userId)
+    await this.chatService.assertOwned(userId, id)
 
-    // 并发上限先行拦截，且必须在写 SSE 响应头之前：那样客户端拿到的才是真实 HTTP 429，
-    // 而不是混在流内 error 帧里的文本 —— 前端把后者当"回答出错"处理，用户看不到是被限流
-    if (!this.slots.tryAcquire(userId)) {
-      const max = this.slots.maxPerUser()
-      res.status(429).json({
-        statusCode: 429,
-        message: `已有 ${max} 条对话在进行中，请等当前回答结束后再试`,
-        maxConcurrentStreams: max,
+    let session = this.sessions.get(id)
+
+    if (body.resume) {
+      // 续订：只订阅既有会话，不占槽位不跑预检（生成早已在跑）
+      if (!session) {
+        res.status(404).json({
+          statusCode: 404,
+          message: '无可续订的流：该生成已结束或服务已重启，请重载会话消息',
+        })
+        return
+      }
+    } else {
+      // 新提问：同会话上一条未结束直接拒（两条流会交错写消息、双份轨迹、各走一次确认门）
+      if (session && !session.done) {
+        res.status(409).json({
+          statusCode: 409,
+          message: '这个会话已有一条回答在进行中，请等它结束后再继续提问',
+        })
+        return
+      }
+      // 用量闸门必须在切 SSE 之前（且放在占槽之前）：客户端要能分清「预算用尽」和「回答出错」
+      await this.chatService.assertTokenBudget(userId)
+      if (!this.slots.tryAcquire(userId)) {
+        const max = this.slots.maxPerUser()
+        res.status(429).json({
+          statusCode: 429,
+          message: `已有 ${max} 条对话在进行中，请等当前回答结束后再试`,
+          maxConcurrentStreams: max,
+        })
+        return
+      }
+      if (!this.slots.tryClaimChat(id, userId)) {
+        this.slots.release(userId)
+        res.status(409).json({
+          statusCode: 409,
+          message: '这个会话已有一条回答在进行中，请等它结束后再继续提问',
+        })
+        return
+      }
+
+      const abort = new AbortController()
+      let stream: AsyncGenerator<AgentStreamEvent> | null = null
+      session = this.sessions.create(id, userId, () => {
+        abort.abort()
+        // 光靠 generator.return() 收不回已发出的 HTTP 请求，signal 才是掐请求的
+        void stream?.return(undefined as never).catch(() => {})
       })
-      return
+      const owned = session
+      // 停机排空走这条路：与 stop 端点同语义（done 帧带 stopped 标记）
+      this.slots.registerCancel(id, () => {
+        owned.stopped = true
+        owned.cancel()
+      })
+
+      // 后台泵：生命周期独立于任何 HTTP 连接。断连只是退订，生成继续、回答照常落库；
+      // 槽位/会话占用在泵收尾时归还，而不是请求结束时
+      const requestId = String(res.getHeader('X-Request-Id') ?? '') || undefined
+      void (async () => {
+        try {
+          const started = await this.chatService.startStream(
+            id,
+            body.prompt ?? '',
+            body.model,
+            body.useRag,
+            body.systemPrompt,
+            { requestId, signal: abort.signal, attachments: body.attachments },
+          )
+          stream = started.stream
+          for await (const evt of stream) {
+            this.sessions.push(id, serializeEvent(evt))
+          }
+          this.sessions.push(id, { done: true, stopped: owned.stopped === true })
+        } catch (err) {
+          // stop/停机取消是正常收尾（done+stopped）；其余抛错走 error 帧
+          if (abort.signal.aborted) this.sessions.push(id, { done: true, stopped: true })
+          else this.sessions.push(id, { error: err instanceof Error ? err.message : String(err) })
+        } finally {
+          this.sessions.finish(id)
+          this.slots.unregisterCancel(id)
+          this.slots.release(userId)
+          this.slots.releaseChat(id)
+        }
+      })()
     }
 
-    // 同一会话只允许一条在途流（两条会交错写消息、产出双份运行轨迹、各走一次确认门）。
-    // 归还顺序：会话占用失败时要先把刚拿到的用户槽放回去，否则一次 409 就永久吃掉一个名额
-    if (!this.slots.tryClaimChat(id, userId)) {
-      this.slots.release(userId)
-      res.status(409).json({
-        statusCode: 409,
-        message: '这个会话已有一条回答在进行中，请等它结束后再继续提问',
-      })
-      return
-    }
-
+    // SSE 写端：从 afterSeq 回放后 live-tail 至会话结束；连接关闭只退订不影响泵
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Connection', 'keep-alive')
     res.setHeader('X-Accel-Buffering', 'no')
-
-    // 客户端断连（用户点停止/关窗口）即终止生成器：
-    // 阶段一工具循环期间无事件输出，仅靠事件间检查会继续执行工具调用（含建单副作用）与 token 消耗
-    let clientGone = false
-    let stream: AsyncGenerator<AgentStreamEvent> | null = null
-    // 光靠 generator.return() 收不回已经发出去的 HTTP 请求：它只让上层「不再等」，
-    // 那一次调用仍会把「重试 × N + 备用模型 × M」跑完，token 照付。signal 才是掐请求的
-    const abort = new AbortController()
-    const cancel = () => {
-      clientGone = true
-      abort.abort()
-      // 向生成器注入 return：下一个 await 恢复点即终止，finally 保存半成品回答
-      void stream?.return(undefined as never).catch(() => {})
-    }
-    res.on('close', cancel)
-
+    const afterSeq = Math.max(0, Math.floor(Number(body.afterSeq) || 0))
+    let closed = false
+    let wakeClose!: () => void
+    // close 唤醒必须即时生效：预检期断连时订阅会一直挂着等新事件，
+    // 不 race 这个 promise 写循环就永远收不到「客户端走了」
+    const closedPromise = new Promise<'closed'>((resolve) => {
+      wakeClose = () => resolve('closed')
+    })
+    res.on('close', () => {
+      closed = true
+      wakeClose()
+    })
+    const sub = this.sessions.subscribe(id, afterSeq)
     try {
-      // 停机时要靠这张表把在途流收回来（SSE 不会自己结束，否则进程排空不掉）；
-      // 注册放在 try 内，与 finally 的注销成对，中途抛错不会留下悬空回调
-      this.slots.registerCancel(id, cancel)
-      await this.chatService.assertOwned(userId, id)
-      // reqId 由 LoggingInterceptor 写在响应头上，这里显式取出来传给运行层：
-      // 一次提问会打出多条日志（工具执行、确认、汇总）并落一条 AgentRun，
-      // 靠同一个 id 才能串起来。不用 AsyncLocalStorage —— Nest 的路由处理是冷
-      // Observable，在拦截器里 run() 的上下文不保证覆盖到实际执行时刻。
-      const requestId = String(res.getHeader('X-Request-Id') ?? '') || undefined
-      const started = await this.chatService.startStream(
-        id,
-        body.prompt,
-        body.model,
-        body.useRag,
-        body.systemPrompt,
-        {
-          requestId,
-          signal: abort.signal,
-        },
-      )
-      stream = started.stream
-      // 预检阶段（人设/历史/RAG）就断连的：close 事件到来时 stream 还没赋值，
-      // 那时只置了标记。补一次收尾，半成品与 partial 轨迹照常落库
-      if (clientGone) cancel()
-      // Agent 事件流：工具轨迹 / 确认请求 / 工单 / 引用溯源 均先于正文 token 推送
-      for await (const evt of stream) {
-        if (clientGone) break
-        if (evt.type === 'content') {
-          res.write(`data: ${JSON.stringify({ content: evt.text })}\n\n`)
-        } else if (evt.type === 'sources') {
-          res.write(`data: ${JSON.stringify({ sources: evt.sources })}\n\n`)
-        } else if (evt.type === 'tool') {
-          res.write(`data: ${JSON.stringify({ tool: evt.step })}\n\n`)
-        } else if (evt.type === 'ticket') {
-          res.write(`data: ${JSON.stringify({ ticket: evt.ticket })}\n\n`)
-        } else if (evt.type === 'confirm_required') {
-          res.write(`data: ${JSON.stringify({ confirm: evt.draft })}\n\n`)
-        }
+      for (;;) {
+        if (closed) break
+        const next = await Promise.race([sub.next(), closedPromise])
+        if (next === 'closed' || next.done) break
+        res.write(`id: ${next.value.seq}\ndata: ${JSON.stringify(next.value.payload)}\n\n`)
       }
-      stream = null
-      // 断连后 res 已关闭，再写会抛出异步 ERR_STREAM_WRITE_AFTER_END
-      if (!clientGone) res.write(`data: ${JSON.stringify({ done: true })}\n\n`)
-    } catch (err) {
-      // 断连后的抛错（取消信号掐掉请求即属此类）不再往已关闭的响应里写
-      if (!clientGone) res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`)
+    } catch {
+      // 写端异常（客户端已走）：退订即可，泵继续
     } finally {
+      void sub.return(undefined)
+      // 无条件 end：连接已关时 express 内部 noop，但收尾语义必须完整（与旧实现一致）
       res.end()
-      // 正常结束、断连、抛错三条路径都经过这里，槽位与会话占用不会泄漏
-      this.slots.unregisterCancel(id)
-      this.slots.release(userId)
-      this.slots.releaseChat(id)
     }
+  }
+
+  // 显式停止生成：流与连接解耦后，取消后台泵的唯一入口
+  @Post(':id/stop')
+  async stopStream(@UserId() userId: string, @Param('id') id: string) {
+    await this.chatService.assertOwned(userId, id)
+    const session = this.sessions.get(id)
+    if (!session || session.done) return { success: false, message: '没有进行中的流' }
+    session.stopped = true
+    session.cancel()
+    return { success: true }
+  }
+
+  // ===== 对话附件 =====
+
+  // 上传（composer 纸夹）：字节落盘 + 元数据行，返回芯片信息
+  @Post(':id/attachments')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_CHAT_ATTACHMENT_BYTES } }))
+  @UseFilters(new UploadErrorFilter(MAX_CHAT_ATTACHMENT_BYTES))
+  async uploadAttachment(
+    @UserId() userId: string,
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    return this.chatService.addAttachment(userId, id, file)
+  }
+
+  @Get(':id/attachments')
+  async listAttachments(@UserId() userId: string, @Param('id') id: string) {
+    return this.chatService.listAttachments(userId, id)
+  }
+
+  @Get(':id/attachments/:attachmentId/download')
+  async downloadAttachment(
+    @UserId() userId: string,
+    @Param('id') id: string,
+    @Param('attachmentId') attachmentId: string,
+    @Res() res: Response,
+  ) {
+    const { row, buffer } = await this.chatService.downloadAttachment(userId, id, attachmentId)
+    res.setHeader('Content-Type', row.mimeType)
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(row.name)}"`)
+    res.end(buffer)
+  }
+
+  // 删除（仅上传者）：composer 里移除未发送的芯片时调用
+  @Delete(':id/attachments/:attachmentId')
+  async removeAttachment(
+    @UserId() userId: string,
+    @Param('id') id: string,
+    @Param('attachmentId') attachmentId: string,
+  ) {
+    return this.chatService.removeAttachment(userId, id, attachmentId)
   }
 
   // HITL 建单确认：用户在确认卡上选择后调用，恢复/终止挂起的 Agent 循环；

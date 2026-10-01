@@ -156,8 +156,10 @@ function makeService(overrides?: {
     feedbackReason: string | null
     _count: { _all: number }
   }[]
-  // deflection 的三组聚合行 + 未归属计数
+  // deflection 的聚合行 + 未归属计数
   roleRows?: { chatId: string; role: string; _count: { _all: number } }[]
+  /** 带引用来源的回答（sources 非空） */
+  citedRows?: { chatId: string; _count: { _all: number } }[]
   downRows?: { chatId: string; _count: { _all: number } }[]
   ticketRows?: { chatId: string | null; _count: { _all: number } }[]
   categoryRows?: { category: string; _count: { _all: number } }[]
@@ -171,9 +173,11 @@ function makeService(overrides?: {
     },
     message: {
       // 按 by 分派，避免和调用顺序耦合（overview 与 deflection 用同一个 groupBy 不同分组）
-      groupBy: jest.fn(async (args: { by: string[] }) => {
+      groupBy: jest.fn(async (args: { by: string[]; where?: Record<string, unknown> }) => {
         if (args.by.includes('role')) return o?.roleRows ?? []
         if (args.by.includes('feedback')) return o?.feedbackRows ?? []
+        // 剩下两条都是 by:['chatId']，只能靠 where 区分：带 sources 条件的那条是"有引用的回答"
+        if (args.where && 'sources' in args.where) return o?.citedRows ?? []
         return o?.downRows ?? []
       }),
     },
@@ -332,6 +336,8 @@ describe('AnalyticsService.deflection', () => {
         { chatId: 'c4', role: 'user', _count: { _all: 3 } },
       ],
       downRows: [{ chatId: 'c3', _count: { _all: 1 } }],
+      // 只有 c1 的回答带引用：c3 没升级、也没被 👎，但整段会话没查过资料 → 无依据偏转
+      citedRows: [{ chatId: 'c1', _count: { _all: 2 } }],
       ticketRows: [{ chatId: 'c2', _count: { _all: 1 } }],
       categoryRows: [
         { category: 'network', _count: { _all: 1 } },
@@ -347,6 +353,8 @@ describe('AnalyticsService.deflection', () => {
       deflectedSessions: 2,
       deflectionRate: 0.6667,
       lowConfidenceDeflections: 1,
+      ungroundedDeflections: 1,
+      ungroundedShare: 0.5,
       unansweredSessions: 1,
       attributionCoverage: 1,
     })
@@ -376,6 +384,20 @@ describe('AnalyticsService.deflection', () => {
     )
     // 2 张老工单追不回会话：不进分子，但 coverage 要体现出来
     expect(r.unattributedAgentTickets).toBe(2)
+    // 「有引用的回答」那条聚合必须自己带上 sources 条件：少了它，无依据偏转会把
+    // 所有会话都算成有依据（等于这个指标永远为 0）
+    const msgGroupArgs = prisma.message.groupBy.mock.calls as Array<
+      [{ by: string[]; where?: Record<string, unknown> }]
+    >
+    const citedArgs = msgGroupArgs.find(
+      ([a]) => a.by.join(',') === 'chatId' && a.where && 'sources' in a.where,
+    )?.[0]
+    expect(citedArgs).toBeDefined()
+    expect(citedArgs!.where).toMatchObject({
+      role: 'assistant',
+      sources: { not: null },
+      createdAt: expect.any(Object),
+    })
     expect(r.attributionCoverage).toBe(0)
   })
 })

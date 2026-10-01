@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { PrismaService } from '@/prisma/prisma.service'
@@ -21,6 +22,13 @@ import {
 import { AgentToolRegistry, CreateTicketTool } from './agent-tools'
 import { AgentPersonaService } from './agent-persona.service'
 import type { TicketDraft, TicketRef } from './agent-tools'
+import {
+  ChatAttachmentStore,
+  CHAT_ATTACHMENT_EXTS,
+  MAX_CHAT_ATTACHMENT_BYTES,
+} from './chat-attachment.store'
+import { randomUUID } from 'crypto'
+import { ATTACHMENT_INJECT_CHARS, READABLE_TEXT_EXTS } from './agent-tools/read-attachment.tool'
 import { enforceLoopBudget, estimateTokens, trimHistoryToBudget } from './context-budget'
 import { confirmWaitWindows, waitForConfirmRequest, type ConfirmOutcome } from './confirm-wait'
 import {
@@ -32,6 +40,12 @@ import {
 } from './token-budget'
 import { isRatableMessage, normalizeFeedback } from './message-feedback'
 import { fenceUntrusted } from './prompt-boundary'
+import {
+  DUPLICATE_CALL_NOTICE,
+  DUPLICATE_CALL_SUMMARY,
+  markDuplicates,
+  type RoundCall,
+} from './tool-dedup'
 
 // ===== Agent 流式事件协议（SSE 透传给前端） =====
 
@@ -124,6 +138,8 @@ export class ChatService {
     private personas: AgentPersonaService,
     // 建单落库 + 写记忆的唯一入口（确认后建单、断连后异步确认建单共用）
     private createTicketTool: CreateTicketTool,
+    // 对话附件字节存储：可选注入（单测不装配时附件能力静默不可用）
+    @Optional() private readonly chatAttachmentStore?: ChatAttachmentStore,
   ) {}
 
   // 根据当前 DB 配置动态创建 OpenAI 兼容客户端（设置页可实时修改）
@@ -193,7 +209,16 @@ export class ChatService {
   // 删除会话（仅限本人）
   async deleteChat(userId: string, chatId: string) {
     await this.assertOwned(userId, chatId)
+    // 对话附件无外键：先取 id，删会话后清 DB 行与磁盘字节（顺序反了会查不到行）
+    const atts = await this.prisma.chatAttachment.findMany({
+      where: { chatId },
+      select: { id: true },
+    })
     await this.prisma.chat.delete({ where: { id: chatId } })
+    if (atts.length > 0) {
+      await this.prisma.chatAttachment.deleteMany({ where: { id: { in: atts.map((a) => a.id) } } })
+      await this.chatAttachmentStore?.removeMany(atts.map((a) => a.id))
+    }
   }
 
   // 获取会话消息列表（仅限本人）
@@ -381,12 +406,135 @@ ${fenceUntrusted(context)}`,
   }
 
   // 保存用户消息（顺带刷新会话时间，保持列表排序正确）
-  async saveUserMessage(chatId: string, content: string) {
+  // attachments：本轮对话附件元数据（展示芯片用）；正文注入只进 LLM 上下文不落这里
+  async saveUserMessage(
+    chatId: string,
+    content: string,
+    attachments?: { id: string; name: string; size: number; mimeType: string }[],
+  ) {
     const message = await this.prisma.message.create({
-      data: { chatId, role: 'user', content },
+      data: {
+        chatId,
+        role: 'user',
+        content,
+        ...(attachments && attachments.length > 0
+          ? { attachments: attachments as Prisma.InputJsonValue }
+          : {}),
+      },
     })
     await this.touchChat(chatId)
     return message
+  }
+
+  // ===== 对话附件 =====
+
+  // 上传：先写盘再落库（落盘失败则不留孤行）；返回芯片元数据
+  async addAttachment(userId: string, chatId: string, file: Express.Multer.File) {
+    await this.assertOwned(userId, chatId)
+    if (!this.chatAttachmentStore) throw new BadRequestException('附件存储未装配')
+    if (!file) throw new BadRequestException('未收到文件')
+    if (file.size > MAX_CHAT_ATTACHMENT_BYTES) {
+      throw new BadRequestException(
+        `附件过大，单个不得超过 ${(MAX_CHAT_ATTACHMENT_BYTES / 1024 / 1024).toFixed(0)}MB`,
+      )
+    }
+    const ext = file.originalname.split('.').pop()?.toLowerCase() || ''
+    if (!CHAT_ATTACHMENT_EXTS.has(ext)) {
+      throw new BadRequestException(`不支持的附件类型 .${ext || 'unknown'}`)
+    }
+    const id = randomUUID()
+    await this.chatAttachmentStore.write(id, file.buffer)
+    try {
+      const row = await this.prisma.chatAttachment.create({
+        data: {
+          id,
+          chatId,
+          uploaderId: userId,
+          name: file.originalname,
+          mimeType: file.mimetype || 'application/octet-stream',
+          size: file.size,
+        },
+      })
+      return { id: row.id, name: row.name, size: row.size, mimeType: row.mimeType }
+    } catch (err) {
+      // 落库失败清掉刚写的字节，不留孤儿文件
+      await this.chatAttachmentStore.remove(id)
+      throw err
+    }
+  }
+
+  async listAttachments(userId: string, chatId: string) {
+    await this.assertOwned(userId, chatId)
+    return this.prisma.chatAttachment.findMany({
+      where: { chatId },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, name: true, size: true, mimeType: true, createdAt: true },
+    })
+  }
+
+  async downloadAttachment(userId: string, chatId: string, attachmentId: string) {
+    await this.assertOwned(userId, chatId)
+    const row = await this.prisma.chatAttachment.findFirst({ where: { id: attachmentId, chatId } })
+    if (!row || !this.chatAttachmentStore) throw new NotFoundException('附件不存在')
+    const buffer = await this.chatAttachmentStore.read(row.id)
+    if (!buffer) throw new NotFoundException('附件字节已丢失')
+    return { row, buffer }
+  }
+
+  // 删除：仅上传者本人（composer 里移除芯片时调用）
+  async removeAttachment(userId: string, chatId: string, attachmentId: string) {
+    await this.assertOwned(userId, chatId)
+    const row = await this.prisma.chatAttachment.findFirst({
+      where: { id: attachmentId, chatId, uploaderId: userId },
+    })
+    if (!row) throw new NotFoundException('附件不存在')
+    await this.prisma.chatAttachment.delete({ where: { id: row.id } })
+    await this.chatAttachmentStore?.remove(row.id)
+    return { success: true }
+  }
+
+  // 本轮附件 → 上下文注入块（截断 + 围栏）+ 落库元数据。
+  // 注入拼在当前提问的 user 消息里（不落消息正文）：模型看到「问题 + 证据」同帧，
+  // 截断过的附件在文末提示可用 read_attachment 取全文
+  private async buildAttachmentContext(
+    chatId: string,
+    ids: string[],
+  ): Promise<{
+    briefs: { id: string; name: string; size: number; mimeType: string }[]
+    injection: string
+  }> {
+    if (!this.chatAttachmentStore || ids.length === 0) return { briefs: [], injection: '' }
+    const rows = await this.prisma.chatAttachment.findMany({ where: { id: { in: ids }, chatId } })
+    const briefs = rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      size: r.size,
+      mimeType: r.mimeType,
+    }))
+    if (rows.length === 0) return { briefs, injection: '' }
+    const blocks: string[] = []
+    for (const r of rows) {
+      const ext = r.name.split('.').pop()?.toLowerCase() || ''
+      let body: string
+      if (!READABLE_TEXT_EXTS.has(ext)) {
+        body = `（二进制附件 ${r.mimeType}，${r.size} 字节；文本内容不可读，仅知存在）`
+      } else {
+        const buf = await this.chatAttachmentStore.read(r.id)
+        if (!buf) {
+          body = '（附件字节已丢失）'
+        } else {
+          const text = buf.toString('utf8')
+          const cut = text.slice(0, ATTACHMENT_INJECT_CHARS)
+          body =
+            cut +
+            (text.length > cut.length
+              ? `\n…（已截断，全文用 read_attachment 工具读取，attachment_id=${r.id}）`
+              : '')
+        }
+      }
+      blocks.push(`附件：${r.name}（id=${r.id}）\n${fenceUntrusted(body)}`)
+    }
+    return { briefs, injection: `[用户本轮提交的对话附件]\n${blocks.join('\n\n')}` }
   }
 
   // 保存 AI 回复（顺带刷新会话时间，sources 为 RAG 引用溯源，tokens 为该次回答的 LLM 用量）
@@ -420,11 +568,34 @@ ${fenceUntrusted(context)}`,
 
   // 客户端中断流后保存半成品回答（标记中止，前端续接"已停止"状态）
   // 返回消息 id（供 AgentRun 关联），保存失败时返回 undefined
-  private async savePartialMessage(chatId: string, partial: string): Promise<string | undefined> {
+  private async savePartialMessage(
+    chatId: string,
+    partial: string,
+    snapshot: {
+      model?: string
+      sources?: RagHit[]
+      promptTokens: number
+      completionTokens: number
+    },
+  ): Promise<string | undefined> {
     try {
       // 幂等：run 生成器正常完成路径已保存完整回答，此处仅在 abort 后补充
       const message = await this.prisma.message.create({
-        data: { chatId, role: 'assistant', content: partial + '\n\n_[已中断]_ ' },
+        data: {
+          chatId,
+          role: 'assistant',
+          content: partial + '\n\n_[已中断]_ ',
+          model: snapshot.model,
+          // 断连守卫的注释写着"避免正文/引用丢失"——引用此前其实没落。截断处仍带引用，
+          // 用户回来才能判断那半截回答是查过资料的还是凭空说的
+          sources: snapshot.sources?.length
+            ? (snapshot.sources as unknown as Prisma.JsonValue)
+            : undefined,
+          // 不写这两个数，"生成到一半就断连"就既不进每日预算（可以被无限刷），
+          // 又让那次会话在偏转率里算成"AI 答过"——花的钱与给的答复对不上账
+          promptTokens: snapshot.promptTokens,
+          completionTokens: snapshot.completionTokens,
+        },
       })
       await this.touchChat(chatId)
       return message.id
@@ -519,9 +690,15 @@ ${fenceUntrusted(context)}`,
 
     // 跨会话长期记忆注入（偏好/事实/工单记录）：按当前问题语义召回，embedding
     // 不可用时内部回退按更新时间取最近（返回形状不变）
+    // 之所以围栏：记忆是从对话里抽出来的，而对话里有文档与工具输出 —— 一篇投毒的共享文档
+    // 可以借"抽取→下次以 system 注入"这条链，把指令持久化并在整个部门里放大。
+    // 围栏把它按数据处理，标签留在外面，模型仍知道这是用户的长期记忆
     const facts = await this.memoryService.getUserMemory(owner.id, prompt, 10)
     if (facts.length > 0) {
-      messages.push({ role: 'system', content: `[用户长期记忆]\n- ${facts.join('\n- ')}` })
+      messages.push({
+        role: 'system',
+        content: `[用户长期记忆]\n${fenceUntrusted(`- ${facts.join('\n- ')}`)}`,
+      })
     }
 
     // 会话摘要：历史溢出时后台异步生成，本次请求先用旧摘要（若有）
@@ -555,7 +732,12 @@ ${fenceUntrusted(context)}`,
       }
     }
     if (chat?.summary) {
-      messages.push({ role: 'system', content: `[早期对话摘要]\n${chat.summary.slice(0, 800)}` })
+      // 摘要是模型对"含外来内容的历史"的复述：不围栏就等于让一段无人复核的
+      // 派生文本每轮都以 system 身份回来
+      messages.push({
+        role: 'system',
+        content: `[早期对话摘要]\n${fenceUntrusted(chat.summary.slice(0, 800))}`,
+      })
     }
 
     messages.push(
@@ -822,7 +1004,12 @@ ${fenceUntrusted(context)}`,
     model?: string,
     _useRag?: boolean, // 兼容旧参数：检索时机已由 Agent 自主决策
     systemPrompt?: string,
-    opts: { requestId?: string; signal?: AbortSignal } = {},
+    opts: {
+      requestId?: string
+      signal?: AbortSignal
+      /** 本轮对话附件 id：正文截断注入上下文，元数据随用户消息落库 */
+      attachments?: string[]
+    } = {},
   ): Promise<{ stream: AsyncGenerator<AgentStreamEvent> }> {
     const { requestId, signal } = opts
     const owner = await this.getChatOwner(chatId)
@@ -831,7 +1018,8 @@ ${fenceUntrusted(context)}`,
     const decisionChain = await this.resolveDecisionChain(owner.id, modelChain)
     const history = await this.buildHistory(owner, chatId, prompt, openai, modelChain)
     const persona = await this.personas.active()
-    await this.saveUserMessage(chatId, prompt)
+    const attCtx = await this.buildAttachmentContext(chatId, opts.attachments ?? [])
+    await this.saveUserMessage(chatId, prompt, attCtx.briefs)
 
     // 消息序列：Agent 人设 →（可选）注入的提示词角色 → 长期记忆/摘要/历史 → 当前提问
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
@@ -841,7 +1029,10 @@ ${fenceUntrusted(context)}`,
       messages.push({ role: 'system', content: systemPrompt.trim() })
     }
     const historyStart = messages.length
-    messages.push(...history, { role: 'user', content: prompt })
+    messages.push(...history, {
+      role: 'user',
+      content: attCtx.injection ? `${prompt}\n\n${attCtx.injection}` : prompt,
+    })
     // 硬上限断言：超限时裁剪最旧历史（system 注入片段与当前提问保留）
     // historyEnd 为当前提问下标，随裁剪左移；工具循环内每轮复用它继续收敛预算
     let historyEnd = messages.length - 1
@@ -894,6 +1085,8 @@ ${fenceUntrusted(context)}`,
       let decisionModel = modelChain[0] // 决策循环实际使用的模型（可能已降级）
       // 收敛标记：模型不再调工具（给出直答）即为收敛；触顶退出时为 false → 告警
       let converged = false
+      // 重复调用检测：跨轮记录已「成功」执行过的 (工具+参数) 签名，相同签名不再重复执行
+      const executedOkSignatures = new Set<string>()
       for (let round = 0; round < maxRounds; round++) {
         throwIfCancelled()
         // 统一走 LlmClient：超时/重试/备用模型降级（非流式）
@@ -945,10 +1138,50 @@ ${fenceUntrusted(context)}`,
         let roundFailed = false
         let roundEmptySearch = false
 
+        // 重复调用检测：本轮里与「此前成功执行过」或「同轮已出现」相同签名的调用判为重复，
+        // 不再真正执行，仅补一条固定回执（OpenAI 要求每个 tool_call 都有 tool 回执）。
+        const { duplicateIds, signatureById } = markDuplicates(
+          toolCalls.map((c): RoundCall => ({
+            id: c.id,
+            name: c.function.name,
+            rawArgs: c.function.arguments,
+          })),
+          executedOkSignatures,
+        )
+        for (const call of toolCalls) {
+          if (!duplicateIds.has(call.id)) continue
+          const fname = call.function.name
+          trace.steps.push({ kind: 'tool', tool: fname, status: 'start', round: round + 1 })
+          yield { type: 'tool', step: { tool: fname, status: 'start' } }
+          trace.toolCalls++
+          trace.steps.push({
+            kind: 'tool',
+            tool: fname,
+            status: 'done',
+            summary: DUPLICATE_CALL_SUMMARY,
+            ms: 0,
+            round: round + 1,
+          })
+          messages.push({
+            role: 'tool',
+            tool_call_id: call.id,
+            content: JSON.stringify({ message: DUPLICATE_CALL_NOTICE }),
+          })
+          yield {
+            type: 'tool',
+            step: { tool: fname, status: 'done', summary: DUPLICATE_CALL_SUMMARY },
+          }
+        }
+
         // 同一轮内纯读工具（无副作用、不触发 HITL）并行执行；create_ticket 等其余
-        // 工具保持串行并置于读工具之后（确认门 yield 会阻塞，必须串行且靠后）
-        const readCalls = toolCalls.filter((c) => this.toolRegistry.isReadOnly(c.function.name))
-        const writeCalls = toolCalls.filter((c) => !this.toolRegistry.isReadOnly(c.function.name))
+        // 工具保持串行并置于读工具之后（确认门 yield 会阻塞，必须串行且靠后）。
+        // 重复调用已在上面收尾，这里只跑「新鲜」调用。
+        const readCalls = toolCalls.filter(
+          (c) => !duplicateIds.has(c.id) && this.toolRegistry.isReadOnly(c.function.name),
+        )
+        const writeCalls = toolCalls.filter(
+          (c) => !duplicateIds.has(c.id) && !this.toolRegistry.isReadOnly(c.function.name),
+        )
 
         if (readCalls.length > 0) {
           // 先按模型返回顺序统一发射 start，再并行执行，最后按同序发射 done
@@ -1008,6 +1241,10 @@ ${fenceUntrusted(context)}`,
             // 反思信号采集：执行失败（error）或空检索
             if (isToolResultError(r.result)) roundFailed = true
             if (isEmptySearch(r.result)) roundEmptySearch = true
+            // 成功执行（含空检索——同一查询重搜仍空，属浪费）记下签名，后续相同调用判重复
+            if (!isToolResultError(r.result)) {
+              executedOkSignatures.add(signatureById.get(r.call.id) as string)
+            }
           }
         }
 
@@ -1269,6 +1506,11 @@ ${fenceUntrusted(context)}`,
           // 反思信号采集：执行失败（error）或空检索
           if (isToolResultError(result)) roundFailed = true
           if (isEmptySearch(result)) roundEmptySearch = true
+          // 成功执行记下签名，后续相同调用判重复（create_ticket 走确认门分支不到这里，
+          // 其重复由 createdTicket 幂等守卫兜，不依赖签名）
+          if (!isToolResultError(result)) {
+            executedOkSignatures.add(signatureById.get(call.id) as string)
+          }
         }
 
         // —— 反思轮：定向干预，强制模型处理失败/空检索，避免含糊带过或重复检索 ——
@@ -1336,6 +1578,15 @@ ${fenceUntrusted(context)}`,
             reason: 'hit-round-cap',
           }),
         )
+        // 触顶兜底：接下来的阶段二生成不再挂任何工具，模型却是在「还想调工具」的状态下被截断的，
+        // 容易含糊收尾甚至假装问题已解决。显式收口，要它据现有信息如实作答、别再假装调用工具。
+        messages.push({
+          role: 'user',
+          content:
+            '注意：已达到本次可用的工具调用上限，接下来无法再调用任何工具。请基于目前已获取的信息，' +
+            '直接用中文给出最终回答：能回答的部分如实回答；若问题仍未解决，请如实告知用户暂未能解决，' +
+            '并建议其补充关键信息（设备、报错、账号等）或创建工单转人工处理。切勿编造答案或假装问题已解决，也不要再声称要调用工具。',
+        })
       }
 
       // —— 阶段二：产出回答 ——
@@ -1476,7 +1727,12 @@ ${fenceUntrusted(context)}`,
           }
           let partialMessageId: string | undefined
           if (partialReply.trim()) {
-            partialMessageId = await this.savePartialMessage(chatId, partialReply)
+            partialMessageId = await this.savePartialMessage(chatId, partialReply, {
+              model: trace.model,
+              sources: trace.sources,
+              promptTokens: trace.promptTokens,
+              completionTokens: trace.completionTokens,
+            })
           }
           // 中断路径轨迹落库：status=partial，用已采集的 steps/token（新建记录，不覆盖 completed）
           trace.replyChars = partialReply.length
@@ -1534,6 +1790,8 @@ ${fenceUntrusted(context)}`,
     const seenSources = new Set<string>()
     let directAnswer = ''
     let rounds = 0
+    // 与线上一致的重复调用检测（评测跑的是同一套路径）
+    const executedOkSignatures = new Set<string>()
 
     for (let round = 0; round < maxRounds; round++) {
       // 统一走 LlmClient：超时/重试/备用模型降级（非流式，确定性优先）。
@@ -1553,11 +1811,29 @@ ${fenceUntrusted(context)}`,
 
       // 记录 assistant 的工具调用意图，随后逐个执行并回填结果（evalMode 下全部无副作用）
       messages.push(msg as OpenAI.Chat.ChatCompletionMessageParam)
+      const { duplicateIds, signatureById } = markDuplicates(
+        calls.map((c): RoundCall => ({
+          id: c.id,
+          name: c.function.name,
+          rawArgs: c.function.arguments,
+        })),
+        executedOkSignatures,
+      )
       let roundFailed = false
       let roundEmptySearch = false
       for (const call of calls) {
         const name = call.function.name
+        // toolCalls 记录模型的原始意图（含重复），保证评测仍能看到"模型是否重复调用"
         toolCalls.push(name)
+        // 重复调用：与线上一致地跳过执行，仅补固定回执
+        if (duplicateIds.has(call.id)) {
+          messages.push({
+            role: 'tool',
+            tool_call_id: call.id,
+            content: JSON.stringify({ message: DUPLICATE_CALL_NOTICE }),
+          })
+          continue
+        }
         // 与线上同一注册表/同一校验路径，仅 evalMode 让写工具不产生副作用
         const res = await this.toolRegistry.execute(name, call.function.arguments, {
           owner,
@@ -1582,6 +1858,9 @@ ${fenceUntrusted(context)}`,
         // 反思信号采集：与 startStream 阶段一保持一致（失败/空检索触发定向干预）
         if (isToolResultError(res.result)) roundFailed = true
         if (isEmptySearch(res.result)) roundEmptySearch = true
+        if (!isToolResultError(res.result)) {
+          executedOkSignatures.add(signatureById.get(call.id) as string)
+        }
       }
       if (roundFailed) {
         messages.push({

@@ -1,0 +1,52 @@
+# 一键起 MySQL + Server（构建上下文为仓库根）。
+# 使用前：cp .env.example .env 并填 JWT_SECRET / BOOTSTRAP_ADMIN_PASSWORD / LLM_*。
+# compose 默认读取本目录 .env 作为变量来源。
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: servicedesk
+      MYSQL_USER: servicedesk
+      MYSQL_PASSWORD: servicedesk
+    ports:
+      - '3306:3306'
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ['CMD', 'mysqladmin', 'ping', '-h', 'localhost', '-uservicedesk', '-pservicedesk']
+      interval: 5s
+      timeout: 3s
+      retries: 24
+
+  server:
+    build:
+      context: ../..
+      dockerfile: apps/server/Dockerfile
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: mysql://servicedesk:servicedesk@mysql:3306/servicedesk
+      JWT_SECRET: ${JWT_SECRET:?请在 .env 设置 JWT_SECRET}
+      OPEN_REGISTRATION: ${OPEN_REGISTRATION:-false}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-default@example.com}
+      BOOTSTRAP_ADMIN_NAME: ${BOOTSTRAP_ADMIN_NAME:-系统管理员}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      LLM_API_URL: ${LLM_API_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_API_MODEL: ${LLM_API_MODEL:-}
+      LLM_FALLBACK_MODELS: ${LLM_FALLBACK_MODELS:-}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      AGENT_TRACE: ${AGENT_TRACE:-on}
+      USER_DAILY_TOKEN_BUDGET: ${USER_DAILY_TOKEN_BUDGET:-0}
+      SLA_SCAN_INTERVAL_MS: ${SLA_SCAN_INTERVAL_MS:-300000}
+    ports:
+      - '4000:4000'
+
+volumes:
+  mysql-data:

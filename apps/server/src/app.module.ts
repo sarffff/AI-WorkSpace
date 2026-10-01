@@ -8,6 +8,7 @@ import { ChatModule } from './modules/chat/chat.module'
 import { KnowledgeModule } from './modules/knowledge/knowledge.module'
 import { PromptsModule } from './modules/prompts/prompts.module'
 import { TicketsModule } from './modules/tickets/tickets.module'
+import { NotificationsModule } from './modules/notifications/notifications.module'
 import { AnalyticsModule } from './modules/analytics/analytics.module'
 import { SettingsModule } from './modules/settings/settings.module'
 import { HealthController } from './common/health.controller'
@@ -46,6 +47,7 @@ function intConfig(value: string | undefined, def: number): number {
     KnowledgeModule,
     PromptsModule,
     TicketsModule,
+    NotificationsModule,
     AnalyticsModule,
   ],
   controllers: [HealthController],

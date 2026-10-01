@@ -5,6 +5,7 @@ import { ThemeProvider } from './providers/ThemeContext'
 import { logout } from '@/entities/auth/model/authSlice'
 import { api } from '@/shared/api/client'
 import { AUTH_UNAUTHORIZED_EVENT } from '@servicedesk/sdk'
+import { Rail } from '@/widgets/rail/ui/Rail'
 import { Sidebar } from '@/widgets/sidebar/ui/Sidebar'
 import { Header } from '@/widgets/header/ui/Header'
 import { AuthPage } from '@/pages/auth/ui/AuthPage'
@@ -17,6 +18,8 @@ import { SettingsPage } from '@/pages/settings/ui/SettingsPage'
 
 function Workspace() {
   const activeTab = useSelector((state: RootState) => state.chat.activeTab)
+  // 对话页 = 图标轨 + 会话栏 + 上下文条 + 画布；其余模块独占画布
+  const isChat = activeTab === 'chat'
 
   const renderContent = () => {
     switch (activeTab) {
@@ -39,20 +42,18 @@ function Workspace() {
 
   return (
     <div className="relative flex h-screen w-screen overflow-hidden bg-s0 font-sans text-t2">
-      {/* 全局氛围层：蓝图网格 + 遥测辉光 */}
-      <div className="glow-field pointer-events-none absolute inset-0 z-0" />
-      <div className="bg-blueprint pointer-events-none absolute inset-0 z-0" />
-      {/* 颗粒噪点 */}
+      {/* 纸纹颗粒 */}
       <div className="noise-overlay" />
 
-      {/* 侧边栏组件 */}
-      <div className="relative z-10">
-        <Sidebar />
-      </div>
+      {/* 图标轨：模块导航 */}
+      <Rail />
+
+      {/* 会话栏：仅对话页 */}
+      {isChat && <Sidebar />}
 
       {/* 主内容区域 */}
       <div className="relative z-10 flex-1 flex flex-col h-full min-w-0">
-        <Header />
+        {isChat && <Header />}
         <main className="flex-1 overflow-hidden">{renderContent()}</main>
       </div>
     </div>

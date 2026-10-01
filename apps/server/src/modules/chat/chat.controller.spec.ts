@@ -2,14 +2,16 @@ import type { ConfigService } from '@nestjs/config'
 import { HttpException } from '@nestjs/common'
 import type { ChatService } from './chat.service'
 import { StreamSlotService } from './stream-slot.service'
+import { StreamSessionService } from './stream-session.service'
 import { ChatController } from './chat.controller'
 
 // 行为依据（与实现一致）：
 // - 超过每用户在途流上限时，必须在写 SSE 响应头之前返回 HTTP 429
 //   （切到 SSE 之后只能把错误塞进流内 error 帧，前端会当成"回答出错"）
 // - 被拒的请求不得触碰 chatService（不生成、不计费）
-// - 流结束、以及 startStream 抛错，都要释放在途槽位
-// - 归属校验（assertOwned）在占用槽位之后进行，失败也要归还
+// - 泵结束、以及 startStream 抛错，都要释放在途槽位
+// - 断连只退订不取消：pump 继续跑完，resume 带 afterSeq 回放
+// - 取消的唯一入口：POST :id/stop 与停机排空（registerCancel）
 
 interface ResState {
   headers: Record<string, string>
@@ -77,6 +79,7 @@ function makeController(opts: {
     get: (key: string) =>
       key === 'MAX_CONCURRENT_STREAMS_PER_USER' ? (opts.streamMax ?? '1') : undefined,
   } as unknown as ConfigService)
+  const sessions = new StreamSessionService()
 
   /** 运行层收到的 opts（requestId / signal），按调用顺序 */
   const streamOpts: Array<{ requestId?: string; signal?: AbortSignal }> = []
@@ -98,8 +101,8 @@ function makeController(opts: {
       return { stream: opts.streams(chatId, o?.signal) }
     },
   }
-  const controller = new ChatController(chatService as unknown as ChatService, slots)
-  return { controller, slots, streamOpts }
+  const controller = new ChatController(chatService as unknown as ChatService, slots, sessions)
+  return { controller, slots, sessions, streamOpts }
 }
 
 const oneChunkStream = (): AsyncGenerator<never> =>
@@ -124,8 +127,9 @@ describe('ChatController 流式端点的并发上限', () => {
     await new Promise((r) => setImmediate(r))
     expect(slots.activeCount('u1')).toBe(1)
 
+    // 同一用户的另一会话：用户槽已满 → 429（同会话重入是 409，另案覆盖）
     const second = fakeRes()
-    await controller.streamCompletions('u1', 'c1', { prompt: 'q2' }, second.res as never)
+    await controller.streamCompletions('u1', 'c2', { prompt: 'q2' }, second.res as never)
 
     expect(second.state.statusCode).toBe(429)
     expect(second.state.headers['Content-Type']).toBeUndefined()
@@ -264,15 +268,62 @@ describe('ChatController 流式端点的并发上限', () => {
   })
 })
 
-// 断连要真的把「别再花钱」传到运行层：return() 只让上层不再等，收不回已经发出去的
-// 请求；signal 才是掐请求的那一手。同时断连后不能再往已关闭的响应里写帧。
-describe('ChatController 断连取消', () => {
-  it('res close 时 abort 信号发出，生成器被回收，槽位归还', async () => {
+// 流与连接解耦后：断连只退订，pump 继续跑完并落库；resume 带 afterSeq 回放；
+// 取消的唯一入口是 stop 端点与停机排空（registerCancel）。
+describe('ChatController 断连与停止', () => {
+  it('断连不中断生成：pump 跑完，resume 回放全部事件', async () => {
+    const { controller, slots, sessions } = makeController({
+      streams: () =>
+        (async function* () {
+          yield { type: 'content', text: '半' } as never
+          await new Promise((r) => setTimeout(r, 20))
+          yield { type: 'content', text: '答' } as never
+        })(),
+    })
+
+    const r = fakeRes()
+    const running = controller.streamCompletions('u1', 'c1', { prompt: 'q' }, r.res as never)
+    await new Promise((res) => setImmediate(res))
+    r.fire('close')
+    await running
+    expect(r.state.ended).toBe(true)
+
+    // pump 独立于连接：等它跑完（槽位随之归还）
+    for (let i = 0; i < 100 && !sessions.get('c1')?.done; i++) {
+      await new Promise((res) => setTimeout(res, 10))
+    }
+    expect(sessions.get('c1')?.done).toBe(true)
+    expect(slots.activeCount('u1')).toBe(0)
+
+    // resume：从 afterSeq=0 回放全量（含 done 帧），事件带 seq id 供客户端记账
+    const r2 = fakeRes()
+    await controller.streamCompletions('u1', 'c1', { resume: true, afterSeq: 0 }, r2.res as never)
+    const all = r2.state.written.join('')
+    expect(all).toContain('半')
+    expect(all).toContain('答')
+    expect(all).toContain('"done":true')
+    expect(r2.state.written[0].startsWith('id: 1\n')).toBe(true)
+  })
+
+  it('resume 无可续订的流返回 404', async () => {
+    const { controller } = makeController({ streams: () => oneChunkStream() })
+    const r = fakeRes()
+    await controller.streamCompletions(
+      'u1',
+      'c-none',
+      { resume: true, afterSeq: 3 },
+      r.res as never,
+    )
+    expect(r.state.statusCode).toBe(404)
+    expect(r.state.headers['Content-Type']).toBeUndefined()
+  })
+
+  it('stop 端点取消 pump：signal abort，done 帧带 stopped 标记', async () => {
     const { controller, slots, streamOpts } = makeController({
       streams: (_id, signal) =>
         (async function* () {
           yield { type: 'content', text: '半' } as never
-          // 模拟一次在途 LLM 调用：只有 signal 触发才会结束（真实实现里会抛错）
+          // 在途的生成调用：只有取消信号能把它收回来
           await new Promise<never>((_resolve, reject) => {
             signal?.addEventListener('abort', () => reject(new Error('llm cancelled')), {
               once: true,
@@ -286,22 +337,22 @@ describe('ChatController 断连取消', () => {
     await new Promise((res) => setImmediate(res))
     expect(r.state.written.some((w) => w.includes('半'))).toBe(true)
 
-    r.fire('close')
+    await controller.stopStream('u1', 'c1')
     await running
 
     expect(streamOpts[0]?.signal?.aborted).toBe(true)
     expect(r.state.ended).toBe(true)
     expect(slots.activeCount('u1')).toBe(0)
     expect(slots.chatHolder('c1')).toBeUndefined()
-    // 取消在生成器内部就是抛错：断连后 done 与 error 都不该再往已关闭的响应里写
-    expect(r.state.written.some((w) => w.includes('"done":true'))).toBe(false)
+    // stop 是正常收尾：done 帧带 stopped 标记，而不是 error 帧
+    expect(r.state.written.some((w) => w.includes('"stopped":true'))).toBe(true)
     expect(r.state.written.some((w) => w.includes('"error"'))).toBe(false)
   })
 
-  it('预检阶段就断连：生成器一次都不被驱动，也不写错误帧', async () => {
+  it('预检阶段断连：连接立即退出，生成后台继续跑完', async () => {
     const gate = deferred()
     let entered = false
-    const { controller, slots } = makeController({
+    const { controller, slots, sessions } = makeController({
       // 预检（人设/历史/RAG）期间挂着：close 到来时流还没构造出来
       onStartStream: async () => {
         await gate.promise
@@ -317,12 +368,18 @@ describe('ChatController 断连取消', () => {
     const running = controller.streamCompletions('u1', 'c1', { prompt: 'q' }, r.res as never)
     await new Promise((res) => setImmediate(res))
     r.fire('close')
-    gate.resolve()
     await running
-
-    expect(entered).toBe(false)
+    // 连接侧：一帧未写、立即收尾
     expect(r.state.written).toEqual([])
     expect(r.state.ended).toBe(true)
+
+    // 生成不被断连打断：gate 放开后 pump 跑完并归还槽位
+    gate.resolve()
+    for (let i = 0; i < 100 && !sessions.get('c1')?.done; i++) {
+      await new Promise((res) => setTimeout(res, 10))
+    }
+    expect(entered).toBe(true)
+    expect(sessions.get('c1')?.done).toBe(true)
     expect(slots.activeCount('u1')).toBe(0)
     expect(slots.chatHolder('c1')).toBeUndefined()
   })
@@ -334,7 +391,7 @@ describe('ChatController 断连取消', () => {
     expect(ok.state.written.some((w) => w.includes('"done":true'))).toBe(true)
   })
 
-  it('停机时在途流被取消：走与断连同一条收尾，登记与槽位都归还', async () => {
+  it('停机时在途流被取消：走与 stop 同一条收尾，登记与槽位都归还', async () => {
     const { controller, slots, streamOpts } = makeController({
       streams: (_id, signal) =>
         (async function* () {
@@ -361,7 +418,7 @@ describe('ChatController 断连取消', () => {
     expect(slots.activeCount('u1')).toBe(0)
     expect(slots.chatHolder('c1')).toBeUndefined()
     expect(r.state.ended).toBe(true)
-    // 停机不是「回答出错」：连接已关，不该再往里写帧
+    // 停机不是「回答出错」：不该写 error 帧
     expect(r.state.written.some((w) => w.includes('"error"'))).toBe(false)
   })
 })

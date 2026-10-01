@@ -156,38 +156,49 @@ export class AnalyticsService {
     this.assertStaff(user)
     const since = new Date(Date.now() - days * AnalyticsService.DAY_MS)
 
-    const [roleRows, downRows, ticketRows, unattributed, categoryRows] = await Promise.all([
-      // 提问数与回答数：role 分桶后按会话计数（同会话同期只有一行 per role）
-      this.prisma.message.groupBy({
-        by: ['chatId', 'role'],
-        where: { createdAt: { gte: since } },
-        _count: { _all: true },
-      }),
-      this.prisma.message.groupBy({
-        by: ['chatId'],
-        where: { role: 'assistant', feedback: 'down', feedbackAt: { gte: since } },
-        _count: { _all: true },
-      }),
-      this.prisma.ticket.groupBy({
-        by: ['chatId'],
-        where: { source: 'agent', createdAt: { gte: since }, chatId: { not: null } },
-        _count: { _all: true },
-      }),
-      this.prisma.ticket.count({
-        where: { source: 'agent', createdAt: { gte: since }, chatId: null },
-      }),
-      this.prisma.ticket.groupBy({
-        by: ['category'],
-        where: { source: 'agent', createdAt: { gte: since } },
-        _count: { _all: true },
-      }),
-    ])
+    const [roleRows, citedRows, downRows, ticketRows, unattributed, categoryRows] =
+      await Promise.all([
+        // 提问数与回答数：role 分桶后按会话计数（同会话同期只有一行 per role）
+        this.prisma.message.groupBy({
+          by: ['chatId', 'role'],
+          where: { createdAt: { gte: since } },
+          _count: { _all: true },
+        }),
+        // 带引用的回答：sources 为空时落的是 NULL，所以 not null 就是"这条查过资料"
+        this.prisma.message.groupBy({
+          by: ['chatId'],
+          where: {
+            role: 'assistant',
+            sources: { not: null },
+            createdAt: { gte: since },
+          },
+          _count: { _all: true },
+        }),
+        this.prisma.message.groupBy({
+          by: ['chatId'],
+          where: { role: 'assistant', feedback: 'down', feedbackAt: { gte: since } },
+          _count: { _all: true },
+        }),
+        this.prisma.ticket.groupBy({
+          by: ['chatId'],
+          where: { source: 'agent', createdAt: { gte: since }, chatId: { not: null } },
+          _count: { _all: true },
+        }),
+        this.prisma.ticket.count({
+          where: { source: 'agent', createdAt: { gte: since }, chatId: null },
+        }),
+        this.prisma.ticket.groupBy({
+          by: ['category'],
+          where: { source: 'agent', createdAt: { gte: since } },
+          _count: { _all: true },
+        }),
+      ])
 
     const facts = new Map<string, SessionFact>()
     const touch = (chatId: string): SessionFact => {
       let f = facts.get(chatId)
       if (!f) {
-        f = { chatId, answers: 0, agentTickets: 0, downs: 0, questions: 0 }
+        f = { chatId, answers: 0, citedAnswers: 0, agentTickets: 0, downs: 0, questions: 0 }
         facts.set(chatId, f)
       }
       return f
@@ -198,6 +209,7 @@ export class AnalyticsService {
       else if (row.role === 'user') f.questions += row._count._all
     }
     for (const row of downRows) touch(row.chatId).downs += row._count._all
+    for (const row of citedRows) touch(row.chatId).citedAnswers += row._count._all
     for (const row of ticketRows) {
       if (row.chatId) touch(row.chatId).agentTickets += row._count._all
     }

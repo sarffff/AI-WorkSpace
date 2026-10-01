@@ -19,6 +19,8 @@ export interface SessionFact {
   chatId: string
   /** 期内该会话的 AI 回答条数；>0 才算「AI 接过这个会话」 */
   answers: number
+  /** 其中带引用来源（sources 非空）的条数：一条都没有 = 整个会话都没查过资料就作答 */
+  citedAnswers: number
   /** 该会话产生的 AI 工单条数（Ticket.source='agent' 且 chatId 命中） */
   agentTickets: number
   /** 期内该会话收到的 👎 数 */
@@ -45,6 +47,17 @@ export interface DeflectionSummary {
   lowConfidenceDeflections: number
   /** 低置信占"偏转成功"的比例；无偏转会话时 null */
   lowConfidenceShare: number | null
+  /**
+   * 偏转成功、但整个会话一条引用都没有的会话数 —— 偏转率水分的**上限**。
+   * 抓的是"没查资料就答了，用户也没再找人"：这种会话既不会升级也不会有 👎，
+   * 靠 👎 抓不到它。判据用 Message.sources（回答落库时一起写），
+   * 不用 AgentRun —— 观测开关一关指标就哑的毛病，这里不能再犯一次。
+   * 口径偏宽是有意的：纯闲聊的会话同样零引用，也会被计入，
+   * 所以它是"最多可能有这么多水分"，不是说这些会话真的都答错了。
+   */
+  ungroundedDeflections: number
+  /** 无依据偏转占"偏转成功"的比例；无偏转会话时 null */
+  ungroundedShare: number | null
   /** 有提问但整期没有一条 AI 回答的会话（故障/断连），不进任何比率 */
   unansweredSessions: number
   unattributedAgentTickets: number
@@ -66,6 +79,7 @@ export function computeDeflection(input: DeflectionInput): DeflectionSummary {
       continue
     }
     prev.answers += s.answers
+    prev.citedAnswers += s.citedAnswers
     prev.agentTickets += s.agentTickets
     prev.downs += s.downs
     prev.questions += s.questions
@@ -76,6 +90,9 @@ export function computeDeflection(input: DeflectionInput): DeflectionSummary {
   const escalated = answered.filter((s) => s.agentTickets > 0)
   const deflected = answered.length - escalated.length
   const lowConfidence = answered.filter((s) => s.agentTickets === 0 && s.downs > 0).length
+  const ungrounded = answered.filter(
+    (s) => s.agentTickets === 0 && s.answers > 0 && s.citedAnswers === 0,
+  ).length
   const unanswered = all.filter((s) => s.answers === 0 && s.questions > 0).length
 
   const attributed = all.reduce((sum, s) => sum + s.agentTickets, 0)
@@ -88,6 +105,8 @@ export function computeDeflection(input: DeflectionInput): DeflectionSummary {
     deflectionRate: ratio(deflected, answered.length),
     lowConfidenceDeflections: lowConfidence,
     lowConfidenceShare: ratio(lowConfidence, deflected),
+    ungroundedDeflections: ungrounded,
+    ungroundedShare: ratio(ungrounded, deflected),
     unansweredSessions: unanswered,
     unattributedAgentTickets: input.unattributedAgentTickets,
     attributionCoverage: agentTotal === 0 ? null : ratio(attributed, agentTotal),

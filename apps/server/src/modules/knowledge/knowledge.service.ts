@@ -15,7 +15,14 @@ import { PrismaService } from '@/prisma/prisma.service'
 import { SettingsService } from '@/modules/settings/settings.service'
 import { LlmClient } from '@/common/llm-client'
 import { EmbeddingsClient } from '@/common/embeddings'
-import { extractGapCandidates, summarizeGaps } from './knowledge-gap'
+import {
+  extractGapCandidates,
+  planGapSync,
+  summarizeGapBoard,
+  summarizeGaps,
+  type GapRecord,
+  type GapStatus,
+} from './knowledge-gap'
 import { IndexingQueueService } from './indexing-queue.service'
 import { UploadPayloadStore } from './upload-payload.store'
 import { chunkDocument, ChunkConfig } from './chunking'
@@ -273,17 +280,71 @@ export class KnowledgeService implements OnModuleInit {
         `文件过大，单个文件不得超过 ${(MAX_UPLOAD_BYTES / 1024 / 1024).toFixed(0)}MB`,
       )
     }
-    const shareDept = department && department === user.department ? department : null
     const name = file.originalname || 'untitled'
     const ext = name.split('.').pop()?.toLowerCase() || ''
     this.assertSupportedExt(ext)
+    return this.ingestDocument(user, name, file.buffer, department)
+  }
+
+  // 文本建文档：与上传同一条索引流水线，内容直接以 utf8 字节入队。
+  // 知识运营闭环的入口：缺口候选草稿一键晋升、坐席随手补一篇 SOP 都走这里 ——
+  // 此前只有 multipart 上传，候选草稿必须先落成本地文件才能入库，飞轮转不起来。
+  // 只接受文本类扩展名（缺省补 .md）：文本入口不该收到 pdf/docx 二进制
+  async createDocumentFromText(
+    user: { id: string; role: string; department: string | null },
+    input: { name: string; content: string; department?: string; fromGapTicketId?: string },
+  ) {
+    const content = input.content?.trim() ?? ''
+    if (content.length < 20) {
+      throw new BadRequestException('文档正文至少 20 字，请把解决步骤写完整')
+    }
+    const buffer = Buffer.from(input.content, 'utf8')
+    if (buffer.byteLength > MAX_UPLOAD_BYTES) {
+      throw new BadRequestException(
+        `内容过大，单篇不得超过 ${(MAX_UPLOAD_BYTES / 1024 / 1024).toFixed(0)}MB`,
+      )
+    }
+    let name = input.name?.trim() || 'untitled.md'
+    const ext = name.split('.').pop()?.toLowerCase() || ''
+    if (!TEXT_EXTS.has(ext)) name = `${name}.md`
+    const doc = await this.ingestDocument(user, name, buffer, input.department)
+
+    // 闭环就发生在这一刻：从缺口草稿晋升出来的文档一落地，那条缺口记为已成文，
+    // 出处就是它。记账失败不影响成文 —— 缺口没标上是台账的问题，不是内容的问题，
+    // 反过来（为了记账把已写好的文档吐回去）才是要命的
+    if (input.fromGapTicketId) {
+      try {
+        await this.setGapStatus(user, input.fromGapTicketId, {
+          status: 'covered',
+          documentId: doc.id,
+          note: '由缺口草稿成文',
+        })
+      } catch (err) {
+        this.logger.warn(
+          `缺口成文记账失败 ticket=${input.fromGapTicketId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        )
+      }
+    }
+    return doc
+  }
+
+  // 入库公共路径：落库 processing → 字节落盘（重启续跑）→ 入队后台索引
+  private async ingestDocument(
+    user: { id: string; department: string | null },
+    name: string,
+    buffer: Buffer,
+    department?: string,
+  ) {
+    const shareDept = department && department === user.department ? department : null
 
     const doc = await this.prisma.document.create({
       data: {
         userId: user.id,
         department: shareDept,
         name,
-        size: file.size,
+        size: buffer.byteLength,
         chunks: 0,
         status: 'processing',
       },
@@ -291,9 +352,9 @@ export class KnowledgeService implements OnModuleInit {
 
     // 先把原始字节落盘再入队：内存队列一重启就没了，落盘后才有「续跑」这回事。
     // 写失败不阻断上传（本轮仍在内存里，能正常索引），只是这份文档失去重启续跑能力
-    await this.payloads.write(doc.id, file.buffer)
+    await this.payloads.write(doc.id, buffer)
 
-    this.queue.enqueue(doc.id, file.buffer)
+    this.queue.enqueue(doc.id, buffer)
 
     return {
       id: doc.id,
@@ -786,13 +847,124 @@ export class KnowledgeService implements OnModuleInit {
       })),
     )
 
+    // 台账同步：只为没见过的 ticketId 建行。已有行代表有人处置过（成文/不补），
+    // 一次重算没有资格替人改回来 —— 所以既不覆盖也不删除。
+    const ledger = await this.prisma.knowledgeGap.findMany({
+      select: {
+        ticketId: true,
+        chatId: true,
+        category: true,
+        question: true,
+        reason: true,
+        hasSolution: true,
+        status: true,
+        closedAt: true,
+        closedDocId: true,
+        firstSeenAt: true,
+      },
+      orderBy: { firstSeenAt: 'asc' },
+    })
+    const knownRows: GapRecord[] = ledger.map((r) => ({
+      ticketId: r.ticketId,
+      chatId: r.chatId,
+      category: r.category,
+      question: r.question,
+      reason: r.reason as GapRecord['reason'],
+      hasSolution: r.hasSolution,
+      status: r.status as GapRecord['status'],
+      closedAt: r.closedAt,
+      closedDocId: r.closedDocId,
+      firstSeenAt: r.firstSeenAt,
+    }))
+    const planned = planGapSync(candidates, knownRows)
+    if (planned.length > 0) {
+      await this.prisma.knowledgeGap.createMany({ data: planned, skipDuplicates: true })
+    }
+    // 本轮新建的行不回读，直接按"开放、刚发现"补进内存视图：再来一次 findMany
+    // 换不到更准的时间，反而在两次读之间又插了一次写
+    const rows: GapRecord[] = [
+      ...knownRows,
+      ...planned.map((p) => ({
+        ...p,
+        status: 'open' as GapStatus,
+        closedAt: null,
+        closedDocId: null,
+        firstSeenAt: new Date(),
+      })),
+    ]
+    const statusOf = new Map(knownRows.map((r) => [r.ticketId, r.status]))
+    // 清单只留待补的：已成文/已判不补的还在账上（board 里能看到），但不该再占坐席的注意力
+    const openCandidates = candidates.filter((c) => (statusOf.get(c.ticketId) ?? 'open') === 'open')
+
     return {
       days,
       scanned: tickets.length,
       // 观测/归属追不全时不说"没有缺口"，说"这条拿不到"
       unlinkedResolvedTickets: unlinked,
-      summary: summarizeGaps(candidates),
-      candidates,
+      summary: summarizeGaps(openCandidates),
+      candidates: openCandidates,
+      // 台账全貌：处置分布、挂了多久、成文后又复发的
+      board: summarizeGapBoard(rows),
     }
+  }
+
+  /**
+   * 缺口处置：成文（covered）/ 不打算成文（dismissed）/ 重新打开（open）。
+   *
+   * covered 必须指明是哪篇文档把它补上的 —— 说"已成文"却指不出出处，
+   * 一周后没人信这条处置，缺口清单也就没人再维护了。文档还要过可见性：
+   * 指一篇自己看不见的文档等于没指。
+   */
+  async setGapStatus(
+    user: { id: string; role: string; department: string | null },
+    ticketId: string,
+    input: { status: GapStatus; documentId?: string; note?: string },
+  ) {
+    if (user.role !== 'agent' && user.role !== 'admin') {
+      throw new ForbiddenException('仅坐席/管理员可处置知识缺口')
+    }
+    const status = input.status
+    if (status !== 'open' && status !== 'covered' && status !== 'dismissed') {
+      throw new BadRequestException('缺口状态不合法（open / covered / dismissed）')
+    }
+    const row = await this.prisma.knowledgeGap.findUnique({ where: { ticketId } })
+    if (!row) {
+      throw new NotFoundException('缺口不在台账里：清单按时间窗重算，请先刷新列表')
+    }
+
+    let closedDocId: string | null = row.closedDocId
+    if (status === 'covered') {
+      if (!input.documentId) {
+        throw new BadRequestException('标记成文需要指明对应文档 documentId')
+      }
+      const doc = await this.prisma.document.findFirst({
+        where: { id: input.documentId, ...visibleDocFilter(user) },
+        select: { id: true },
+      })
+      if (!doc) throw new BadRequestException('该文档不存在或不在你的可见范围内')
+      closedDocId = doc.id
+    } else if (status === 'open') {
+      closedDocId = null
+    }
+
+    const reopened = status === 'open'
+    return this.prisma.knowledgeGap.update({
+      where: { ticketId },
+      data: {
+        status,
+        closedBy: reopened ? null : user.id,
+        closedDocId,
+        closeNote: input.note?.trim().slice(0, 500) ?? null,
+        closedAt: reopened ? null : new Date(),
+      },
+      select: {
+        ticketId: true,
+        status: true,
+        closedBy: true,
+        closedDocId: true,
+        closedAt: true,
+        closeNote: true,
+      },
+    })
   }
 }

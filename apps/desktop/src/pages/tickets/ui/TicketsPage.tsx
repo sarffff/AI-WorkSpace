@@ -81,7 +81,7 @@ const TicketCreator: React.FC<{ onClose: () => void; onSaved: () => void }> = ({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-lg rounded-2xl panel border border-line shadow-2xl shadow-black/50 rise-in overflow-hidden"
+        className="w-full max-w-lg rounded-2xl panel border border-line shadow-2xl rise-in overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="px-5 py-4 border-b border-line flex items-center justify-between">
@@ -170,7 +170,7 @@ const TicketCreator: React.FC<{ onClose: () => void; onSaved: () => void }> = ({
           <button
             onClick={submit}
             disabled={busy}
-            className="px-4 py-2 rounded-lg bg-brand-strong hover:brightness-110 disabled:opacity-50 text-brand-on text-xs font-semibold flex items-center gap-1.5 transition-all shadow-md shadow-emerald-500/20"
+            className="px-4 py-2 rounded-lg bg-brand-strong hover:brightness-110 disabled:opacity-50 text-brand-on text-xs font-semibold flex items-center gap-1.5 transition-all"
           >
             {busy ? (
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -220,7 +220,7 @@ const TicketAssigner: React.FC<{
       onClick={onClose}
     >
       <div
-        className="w-full max-w-md rounded-2xl panel border border-line shadow-2xl shadow-black/50 rise-in overflow-hidden"
+        className="w-full max-w-md rounded-2xl panel border border-line shadow-2xl rise-in overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="px-5 py-4 border-b border-line flex items-center justify-between">
@@ -279,7 +279,7 @@ const TicketAssigner: React.FC<{
           <button
             onClick={submit}
             disabled={busy}
-            className="px-4 py-2 rounded-lg bg-brand-strong hover:brightness-110 disabled:opacity-50 text-brand-on text-xs font-semibold flex items-center gap-1.5 transition-all shadow-md shadow-emerald-500/20"
+            className="px-4 py-2 rounded-lg bg-brand-strong hover:brightness-110 disabled:opacity-50 text-brand-on text-xs font-semibold flex items-center gap-1.5 transition-all"
           >
             {busy ? (
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -326,9 +326,15 @@ const TicketStatsPanel: React.FC = () => {
   const cards = [
     {
       icon: <Gauge className="w-4 h-4 text-brand" />,
-      label: 'AI 偏转率',
-      value: pct(stats?.deflectRate ?? null),
-      sub: stats ? `活跃会话 ${stats.sessions} · AI 升级 ${stats.tickets.escalated}` : '',
+      // 偏转率的分母是会话，口径只住在运营看板那一处；工单页不重算一个同名指标，
+      // 只说工单构成：这批单里有多少是 AI 处理不了交上来的
+      label: 'AI 升级单占比',
+      value: stats
+        ? pct(stats.tickets.total ? stats.tickets.escalated / stats.tickets.total : null)
+        : '—',
+      sub: stats
+        ? `AI 升级 ${stats.tickets.escalated}/${stats.tickets.total} · 活跃会话 ${stats.sessions}`
+        : '',
       accent: 'text-brand',
     },
     {
@@ -364,7 +370,7 @@ const TicketStatsPanel: React.FC = () => {
           </div>
           <div>
             <h4 className="font-display text-sm font-semibold text-t1">坐席看板</h4>
-            <span className="text-[11px] text-t3">AI 偏转率与人工处理 SLA 概览</span>
+            <span className="text-[11px] text-t3">AI 升级占比与人工处理 SLA 概览</span>
           </div>
         </div>
         <div className="flex items-center gap-1.5">
@@ -504,8 +510,9 @@ const TicketStatsPanel: React.FC = () => {
           </div>
 
           <p className="text-[9px] font-mono text-t4 mt-3 leading-relaxed">
-            偏转率 = 1 − AI 升级工单数 / 期间活跃会话数 · SLA 阈值 紧急 4h / 高 8h / 普通 24h / 低
-            48h · 解决时间取时间线事件（旧工单回退最后更新时间）
+            AI 升级单占比 = AI 对话升级创建的工单 / 期内新建工单（分母是工单，不是会话；
+            以会话为分母的偏转率只看运营看板） · SLA 阈值 紧急 4h / 高 8h / 普通 24h / 低 48h ·
+            解决时间取时间线事件（旧工单回退最后更新时间）
           </p>
         </>
       ) : null}
@@ -616,7 +623,7 @@ export const TicketsPage: React.FC = () => {
           </div>
           <button
             onClick={() => setCreating(true)}
-            className="px-4 py-2.5 bg-brand/10 hover:bg-emerald-500/20 border border-brand/30 hover:border-brand/50 text-brand text-xs font-semibold rounded-lg flex items-center gap-2 transition-all shrink-0"
+            className="px-4 py-2.5 bg-brand-strong hover:brightness-110 text-brand-on text-xs font-semibold rounded-lg flex items-center gap-2 transition-all shrink-0"
           >
             <Plus className="w-4 h-4" />
             新建工单
@@ -765,7 +772,7 @@ export const TicketsPage: React.FC = () => {
                       {isStaff && t.status === 'open' && (
                         <button
                           onClick={() => claim(t)}
-                          className="px-2.5 py-1.5 rounded-lg bg-brand/10 hover:bg-emerald-500/20 text-brand text-[10px] font-mono border border-brand/20 hover:border-brand/40 transition-colors"
+                          className="px-2.5 py-1.5 rounded-lg bg-brand/10 hover:bg-brand/20 text-brand text-[10px] border border-brand/25 hover:border-brand/40 transition-colors"
                         >
                           受理
                         </button>
@@ -773,7 +780,7 @@ export const TicketsPage: React.FC = () => {
                       {isStaff && t.status === 'processing' && (
                         <button
                           onClick={() => setStatus(t, 'resolved')}
-                          className="px-2.5 py-1.5 rounded-lg bg-brand/10 hover:bg-emerald-500/20 text-brand text-[10px] font-mono border border-brand/20 hover:border-brand/40 transition-colors"
+                          className="px-2.5 py-1.5 rounded-lg bg-brand/10 hover:bg-brand/20 text-brand text-[10px] border border-brand/25 hover:border-brand/40 transition-colors"
                         >
                           标记解决
                         </button>

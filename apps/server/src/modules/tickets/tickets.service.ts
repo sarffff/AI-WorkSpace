@@ -1,10 +1,13 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common'
+import { ForbiddenException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common'
 import { PrismaService } from '@/prisma/prisma.service'
+import { NotificationsService } from '@/modules/notifications/notifications.service'
 import { CreateTicketDto, CreateTicketCommentDto, UpdateTicketDto } from './tickets.dto'
 import { CATEGORY_LABEL, TICKET_CATEGORIES } from './ticket-taxonomy'
+import { TicketAttachmentStore } from './ticket-attachment.store'
 import {
   backtestDispatch,
   previewDispatch,
+  suggestAssignee,
   type DispatchAgent,
   type DispatchTicketRow,
 } from './dispatch-preview'
@@ -30,7 +33,16 @@ const PRIORITY_LABEL: Record<string, string> = {
 // - 坐席/管理员：看到全部工单，可更新状态/优先级/受理人
 @Injectable()
 export class TicketsService {
-  constructor(private prisma: PrismaService) {}
+  private readonly logger = new Logger(TicketsService.name)
+
+  // attachmentStore 可选：单元测试直接 new TicketsService(prisma) 时为 undefined（remove 里以 ?. 兜底），
+  // 真实应用由 TicketsModule 注入，删工单时一并清磁盘上的附件副本。
+  // notifications 同理可选：通知是旁路能力，缺省时静默跳过（单测不装配）
+  constructor(
+    private prisma: PrismaService,
+    @Optional() private readonly attachmentStore?: TicketAttachmentStore,
+    @Optional() private readonly notifications?: NotificationsService,
+  ) {}
 
   private isStaff(user: { role: string }) {
     return user.role === 'agent' || user.role === 'admin'
@@ -50,6 +62,29 @@ export class TicketsService {
     await this.prisma.ticketComment.create({
       data: { ticketId, authorId: operatorId, kind: 'system', content },
     })
+  }
+
+  // 通知全体坐席/管理员：受理队列与 SLA 预警是 staff 共同视角。
+  // 通知服务缺省（单测）或发送失败都不影响主链路
+  // 通知全体坐席/管理员：受理队列与 SLA 预警触达。
+  // 不 await：通知失败不该回滚建单/改状态。但取坐席名单的 findMany 会因 DB 故障拒绝，
+  // 这条 promise 链必须自己接住 —— 未处理的拒绝在 Node 24 下直接打死进程。
+  // （send() 内部已吞异常，需要兜的只有查询这一段）
+  private notifyStaff(type: string, title: string, body: string, payload?: unknown) {
+    if (!this.notifications) return
+    void this.prisma.user
+      .findMany({ where: { role: { in: ['agent', 'admin'] } }, select: { id: true } })
+      .then((staff) =>
+        this.notifications?.send(
+          staff.map((s) => s.id),
+          { type, title, body, payload },
+        ),
+      )
+      .catch((err) =>
+        this.logger.warn(
+          `notify staff failed (${type}): ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      )
   }
 
   // 列表：员工看自己的，坐席/管理员看全部（含创建者/受理人摘要 + 最新一条时间线预览）
@@ -203,8 +238,85 @@ export class TicketsService {
     })
   }
 
+  // ===== 派单落库：把预演里"够硬"的那一条真正写进 assigneeId =====
+  //
+  // 预演/回测一直是只读的，刻意没接写库口 —— 猜错的代价是单子多躺一天，得先用回测数字换。
+  // 这里补上写路径，但守着和预演同一套克制：
+  // - 显式触发：坐席/管理员对某张单点一次，不做「建单即自动派」（那要等回测命中率说话）；
+  // - 证据门槛：只有 autoDispatchable（该分类完结数 >= minEvidence）才写，弱信号一律拒；
+  // - 不覆盖：已派过人或已完结的单不动 —— 重派是坐席的正规操作，不该被自动派抢方向盘。
+  // 写库复用 update()：留「由 X 受理」时间线、并把 open 推进 processing，与人工派单同一路径，
+  // 因此完全可逆（坐席随时可再转派）。返回体永远带上 suggestion，让"为什么没派/派给谁"可核对。
+  async applyDispatch(
+    user: { id: string; role: string },
+    ticketId: string,
+    knobs: { minEvidence?: number; maxLoad?: number | null } = {},
+  ) {
+    if (!this.isStaff(user)) {
+      throw new ForbiddenException('仅坐席/管理员可执行派单')
+    }
+    const raw = await this.prisma.ticket.findUnique({
+      where: { id: ticketId },
+      select: {
+        id: true,
+        title: true,
+        category: true,
+        priority: true,
+        status: true,
+        assigneeId: true,
+        createdAt: true,
+        creator: { select: { department: true } },
+      },
+    })
+    if (!raw) throw new NotFoundException('工单不存在')
+    // 已派过人：不覆盖坐席的判断（重派走工单页的转派操作）
+    if (raw.assigneeId) {
+      return {
+        applied: false as const,
+        reason: 'already_assigned' as const,
+        assigneeId: raw.assigneeId,
+      }
+    }
+    // 已完结的单没有派的意义
+    if (raw.status !== 'open' && raw.status !== 'processing') {
+      return { applied: false as const, reason: 'not_actionable' as const, status: raw.status }
+    }
+
+    const { agents, rows } = await this.loadDispatchData(TicketsService.DISPATCH_DEFAULT_DAYS)
+    const target: DispatchTicketRow = {
+      id: raw.id,
+      title: raw.title,
+      category: raw.category,
+      priority: raw.priority,
+      assigneeId: null,
+      creatorDepartment: raw.creator.department,
+      createdAt: raw.createdAt,
+      resolvedAt: null,
+    }
+    // at 传"当下"：与 dispatchPreview 同口径（用此刻的历史与负载给建议）
+    const suggestion = suggestAssignee(target, agents, rows, new Date(), knobs)
+
+    // 证据不够硬就不写库，把"为什么不敢派"如实报出来
+    if (!suggestion.autoDispatchable || !suggestion.assigneeId) {
+      const reason =
+        suggestion.basis === 'no_signal'
+          ? ('no_signal' as const)
+          : suggestion.basis === 'unroutable_category'
+            ? ('unroutable_category' as const)
+            : suggestion.blockedByLoad
+              ? ('blocked_by_load' as const)
+              : ('thin_evidence' as const)
+      return { applied: false as const, reason, suggestion }
+    }
+
+    // 够硬：复用人工派单路径写库（时间线留痕 + open→processing），完全可逆
+    const ticket = await this.update(user, ticketId, { assigneeId: suggestion.assigneeId })
+    return { applied: true as const, assigneeId: suggestion.assigneeId, suggestion, ticket }
+  }
+
   // ===== 坐席看板统计（仅坐席/管理员） =====
-  // 偏转率 = 1 − AI 升级工单数 / 活跃会话数（期间内有活动的 Chat）
+  // 这里只回答工单侧的问题：量、优先级分布、SLA。偏转率不在这里 —— 它的分母是会话，
+  // 口径住在 AnalyticsService.deflection，一个指标只允许有一个算法。
   // SLA：期内已解决工单按优先级阈值（urgent 4h / high 8h / normal 24h / low 48h）统计达标率；
   // 解决时间取时间线系统事件，无记录的旧工单回退 updatedAt（近似）
   private static readonly SLA_HOURS: Record<string, number> = {
@@ -212,6 +324,92 @@ export class TicketsService {
     high: 8,
     normal: 24,
     low: 48,
+  }
+
+  /** 按优先级从基准时刻折算 SLA 到期时刻（建单/改优先级时写入 Ticket.dueAt） */
+  private slaDueAt(from: Date, priority: string): Date {
+    const hours = TicketsService.SLA_HOURS[priority] ?? 24
+    return new Date(from.getTime() + hours * 3_600_000)
+  }
+
+  // ===== 实时 SLA：违约扫描（仅坐席/管理员） =====
+  //
+  // stats() 是事后账：已解决工单的达标率。这个方法管"违约之前"——扫未完结存量，按 dueAt 把
+  // 每张单分成 已违约 / 濒临违约 / 尚在时限，让坐席能在到期前先处理高优先级的。
+  // 濒临违约的口径随优先级缩放：剩余时间 <= 该优先级 SLA 窗口的 25%（urgent 4h → <1h，
+  // low 48h → <12h），比拍一个固定"还剩 2 小时"更贴合不同优先级的紧迫度。
+  // 只查未完结（有界存量），在内存里分档：不为这条按需看板查询新增索引（详见迁移注释）。
+  private static readonly SLA_AT_RISK_RATIO = 0.25
+
+  async slaBreaches(user: { role: string }) {
+    if (!this.isStaff(user)) {
+      throw new ForbiddenException('仅坐席/管理员可查看 SLA 违约看板')
+    }
+    const active = await this.prisma.ticket.findMany({
+      where: { status: { in: ['open', 'processing'] } },
+      select: {
+        id: true,
+        title: true,
+        priority: true,
+        category: true,
+        status: true,
+        dueAt: true,
+        createdAt: true,
+        assignee: { select: { name: true, email: true } },
+      },
+      orderBy: { createdAt: 'asc' },
+    })
+    const now = Date.now()
+    const round1 = (n: number) => Math.round(n * 10) / 10
+    const breached: unknown[] = []
+    const atRisk: unknown[] = []
+    let onTrack = 0
+    let unscheduled = 0 // 迁移前的老单没有 dueAt，单列计数摆出来，不混进任何分档
+    for (const t of active) {
+      if (!t.dueAt) {
+        unscheduled++
+        continue
+      }
+      const remainingMs = t.dueAt.getTime() - now
+      const windowMs = (TicketsService.SLA_HOURS[t.priority] ?? 24) * 3_600_000
+      const view = {
+        id: t.id,
+        title: t.title,
+        priority: t.priority,
+        category: t.category,
+        status: t.status,
+        dueAt: t.dueAt.toISOString(),
+        assignee: t.assignee?.name ?? t.assignee?.email ?? null,
+      }
+      if (remainingMs < 0) {
+        breached.push({ ...view, overdueHours: round1(-remainingMs / 3_600_000) })
+      } else if (remainingMs <= windowMs * TicketsService.SLA_AT_RISK_RATIO) {
+        atRisk.push({ ...view, remainingHours: round1(remainingMs / 3_600_000) })
+      } else {
+        onTrack++
+      }
+    }
+    // 违约的最紧急（超时最久）在前，濒临的最快到期在前
+    breached.sort(
+      (a, b) =>
+        (b as { overdueHours: number }).overdueHours - (a as { overdueHours: number }).overdueHours,
+    )
+    atRisk.sort(
+      (a, b) =>
+        (a as { remainingHours: number }).remainingHours -
+        (b as { remainingHours: number }).remainingHours,
+    )
+    return {
+      activeTotal: active.length,
+      breachedCount: breached.length,
+      atRiskCount: atRisk.length,
+      onTrackCount: onTrack,
+      unscheduledCount: unscheduled,
+      thresholdHours: TicketsService.SLA_HOURS,
+      atRiskRatio: TicketsService.SLA_AT_RISK_RATIO,
+      breached,
+      atRisk,
+    }
   }
 
   async stats(user: { role: string }, days = 30) {
@@ -317,7 +515,9 @@ export class TicketsService {
         ...statusCount,
       },
       backlog, // 当前未完结（待处理+处理中）存量
-      deflectRate: activeSessions > 0 ? round(Math.max(0, 1 - escalated / activeSessions)) : null,
+      // 刻意不再算 deflectRate：这里曾有"1 − AI 升级工单数 / 活跃会话数"，与
+      // AnalyticsService.deflection（分母=有过 AI 回答的会话）同名不同径，同一app里
+      // 能给出两个"偏转率"。偏转率只有一个口径，住在 analytics，别在这里再造一个。
       sla: {
         met: slaMet,
         total: resolvedTickets.length,
@@ -342,15 +542,18 @@ export class TicketsService {
     internal: { source?: 'agent' | 'manual'; chatId?: string | null } = {},
   ) {
     const source = internal.source === 'agent' ? 'agent' : 'manual'
+    const priority = dto.priority || 'normal'
     const ticket = await this.prisma.ticket.create({
       data: {
         creatorId: userId,
         title: dto.title,
         content: dto.content,
-        priority: dto.priority || 'normal',
+        priority,
         category: dto.category || 'other',
         source,
         chatId: internal.chatId ?? null,
+        // SLA 到期时刻按优先级从此刻折算（createdAt 由 DB 取 now()，两者相差在毫秒级）
+        dueAt: this.slaDueAt(new Date(), priority),
       },
       include: {
         creator: AUTHOR_BRIEF,
@@ -364,6 +567,13 @@ export class TicketsService {
       source === 'agent'
         ? 'AI 对话中自动升级创建工单'
         : `工单已创建（优先级：${PRIORITY_LABEL[ticket.priority]}）`,
+    )
+    // 新单通知：触达全体坐席/管理员（受理队列是 staff 共同视角）
+    this.notifyStaff(
+      'ticket_created',
+      '新工单待受理',
+      `「${ticket.title}」（优先级 ${PRIORITY_LABEL[ticket.priority]}）等待受理`,
+      { ticketId: ticket.id },
     )
     return ticket
   }
@@ -416,6 +626,7 @@ export class TicketsService {
       priority?: string
       assigneeId?: string | null
       category?: string
+      dueAt?: Date
     } = {}
     if (dto.status) data.status = dto.status
     if (dto.priority) data.priority = dto.priority
@@ -423,6 +634,14 @@ export class TicketsService {
     if (dto.assigneeId !== undefined) data.assigneeId = dto.assigneeId
     // 指派受理人且未显式给状态时，自动进入处理中
     if (dto.assigneeId && !dto.status && ticket.status === 'open') data.status = 'processing'
+    // 优先级变更且工单仍未完结：SLA 到期时刻按新优先级从创建时间重算
+    // （已解决/关闭的单不动 dueAt —— 违约扫描本就只看未完结的）
+    if (dto.priority && dto.priority !== ticket.priority) {
+      const effectiveStatus = data.status ?? ticket.status
+      if (effectiveStatus === 'open' || effectiveStatus === 'processing') {
+        data.dueAt = this.slaDueAt(ticket.createdAt, dto.priority)
+      }
+    }
 
     const updated = await this.prisma.ticket.update({
       where: { id },
@@ -469,12 +688,100 @@ export class TicketsService {
       await this.addSystemEvent(id, user.id, e)
     }
 
+    // 状态变更触达创建者（员工不盯看板，靠通知知道单子进展）
+    if (data.status && data.status !== ticket.status && this.notifications) {
+      void this.notifications.send([ticket.creatorId], {
+        type: 'ticket_status',
+        title: '工单状态更新',
+        body: `「${ticket.title}」状态变更为「${STATUS_LABEL[data.status]}」`,
+        payload: { ticketId: id },
+      })
+    }
+    // 指派触达新受理人
+    if (dto.assigneeId && dto.assigneeId !== ticket.assigneeId && this.notifications) {
+      void this.notifications.send([dto.assigneeId], {
+        type: 'ticket_assigned',
+        title: '新工单指派',
+        body: `你被指派处理「${ticket.title}」`,
+        payload: { ticketId: id },
+      })
+    }
+
     return updated
   }
 
   async remove(user: { id: string; role: string }, id: string) {
     await this.getVisibleTicket(user, id)
+    // 先取附件 id：ticket.delete 会级联删掉 DB 行，删完就查不到了
+    const attachments = this.attachmentStore
+      ? await this.prisma.ticketAttachment.findMany({
+          where: { ticketId: id },
+          select: { id: true },
+        })
+      : []
     await this.prisma.ticket.delete({ where: { id } })
+    // 磁盘副本不走 DB 级联，手动清（失败仅告警，不影响删除结果）
+    if (this.attachmentStore && attachments.length) {
+      await this.attachmentStore.removeMany(attachments.map((a) => a.id))
+    }
     return { success: true }
+  }
+
+  // ===== SLA 预警扫描（SlaSchedulerService 周期调用） =====
+  //
+  // 濒临违约口径与看板 slaBreaches() 一致：剩余 <= 该优先级窗口 25%。
+  // slaNotifyStage 保证每个阶段只推一次：null → at_risk → breached 单向推进，
+  // 工单完结后不再扫描（where 只取未完结），优先级变更重算 dueAt 也不回退阶段
+  // （预警推过了就是推过了，回退只会让坐席收到二次噪音）。
+  async scanSlaStages(now = new Date()): Promise<{ atRisk: number; breached: number }> {
+    const active = await this.prisma.ticket.findMany({
+      where: { status: { in: ['open', 'processing'] }, dueAt: { not: null } },
+      select: { id: true, title: true, priority: true, dueAt: true, slaNotifyStage: true },
+    })
+    let atRisk = 0
+    let breached = 0
+    for (const t of active) {
+      if (!t.dueAt) continue
+      const windowMs = (TicketsService.SLA_HOURS[t.priority] ?? 24) * 3_600_000
+      const remaining = t.dueAt.getTime() - now.getTime()
+      if (remaining <= 0 && t.slaNotifyStage !== 'breached') {
+        await this.prisma.ticket.update({
+          where: { id: t.id },
+          data: { slaNotifyStage: 'breached' },
+        })
+        this.notifyStaff(
+          'sla_breached',
+          '工单 SLA 已违约',
+          `「${t.title}」已超出处理时限，请尽快介入`,
+          {
+            ticketId: t.id,
+          },
+        )
+        breached++
+      } else if (
+        remaining > 0 &&
+        remaining <= windowMs * TicketsService.SLA_AT_RISK_RATIO &&
+        !t.slaNotifyStage
+      ) {
+        await this.prisma.ticket.update({
+          where: { id: t.id },
+          data: { slaNotifyStage: 'at_risk' },
+        })
+        const hoursLeft = Math.max(1, Math.round(remaining / 3_600_000))
+        this.notifyStaff(
+          'sla_at_risk',
+          '工单濒临 SLA 违约',
+          `「${t.title}」距到期不足 ${hoursLeft} 小时`,
+          {
+            ticketId: t.id,
+          },
+        )
+        atRisk++
+      }
+    }
+    if (atRisk || breached) {
+      this.logger.log(`sla scan: atRisk=${atRisk}, breached=${breached}`)
+    }
+    return { atRisk, breached }
   }
 }

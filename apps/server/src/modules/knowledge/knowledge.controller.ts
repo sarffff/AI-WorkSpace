@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -13,6 +14,7 @@ import {
 } from '@nestjs/common'
 import { FileInterceptor } from '@nestjs/platform-express'
 import { KnowledgeService, MAX_UPLOAD_BYTES } from './knowledge.service'
+import { CreateTextDocumentDto, SetGapStatusDto } from './knowledge.dto'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { CurrentUser } from '../auth/user-id.decorator'
 import type { SafeUser } from '../auth/auth.service'
@@ -41,6 +43,17 @@ export class KnowledgeController {
     return this.knowledgeService.getGapCandidates(user, d, l)
   }
 
+  // 缺口处置（成文/不补/重开）。键用工单号而不是缺口行主键：
+  // 清单本来就是从工单推导的，坐席手里拿到的也只有工单号
+  @Patch('gap-candidates/:ticketId/status')
+  setGapStatus(
+    @CurrentUser() user: SafeUser,
+    @Param('ticketId') ticketId: string,
+    @Body() dto: SetGapStatusDto,
+  ) {
+    return this.knowledgeService.setGapStatus(user, ticketId, dto)
+  }
+
   // 上传文档（multipart：file + 可选 department 共享标记）→ 落库 + 入队后台索引
   // 体积上限在此拦截：buffer 全程在内存并要进索引队列，无上限时单个大文件即可打爆内存。
   // 超限由 multer 抛 LIMIT_FILE_SIZE，UploadErrorFilter 归一成 413 + 明确文案。
@@ -53,6 +66,12 @@ export class KnowledgeController {
     @Body('department') department?: string,
   ) {
     return await this.knowledgeService.uploadDocument(user, file, department)
+  }
+
+  // 文本建文档：与上传同一条索引流水线；缺口候选草稿一键晋升走这里
+  @Post('documents/text')
+  async createTextDocument(@CurrentUser() user: SafeUser, @Body() dto: CreateTextDocumentDto) {
+    return await this.knowledgeService.createDocumentFromText(user, dto)
   }
 
   @Delete('documents/:id')

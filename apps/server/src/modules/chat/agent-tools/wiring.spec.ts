@@ -2,6 +2,8 @@ import { Test } from '@nestjs/testing'
 import { KnowledgeService } from '@/modules/knowledge/knowledge.service'
 import { TicketsService } from '@/modules/tickets/tickets.service'
 import { MemoryService } from '@/modules/memory/memory.service'
+import { PrismaService } from '@/prisma/prisma.service'
+import { ChatAttachmentStore } from '../chat-attachment.store'
 import { AGENT_TOOL_PROVIDERS } from './index'
 import { AgentToolRegistry } from './registry.service'
 import { CreateTicketTool } from './create-ticket.tool'
@@ -16,27 +18,38 @@ describe('agent-tools DI 装配', () => {
       .useMocker((token) => {
         if (token === KnowledgeService) return { searchRelevant: jest.fn() }
         if (token === TicketsService)
-          return { list: jest.fn(), detail: jest.fn(), create: jest.fn() }
+          return {
+            list: jest.fn(),
+            detail: jest.fn(),
+            create: jest.fn(),
+            addComment: jest.fn(),
+            update: jest.fn(),
+          }
         if (token === MemoryService) return { remember: jest.fn() }
+        if (token === PrismaService) return { chatAttachment: { findFirst: jest.fn() } }
+        if (token === ChatAttachmentStore) return { read: jest.fn() }
         return undefined
       })
       .compile()
 
-  it('注册表可从容器解析，且拿到全部四个工具', async () => {
+  it('注册表可从容器解析，且拿到全部工具（含工单写回工具）', async () => {
     const moduleRef = await build()
     const registry = moduleRef.get(AgentToolRegistry)
     expect(registry.names()).toEqual([
       'search_knowledge',
       'lookup_my_tickets',
       'get_ticket',
+      'read_attachment',
       'create_ticket',
+      'add_ticket_comment',
+      'close_my_ticket',
     ])
   })
 
   it('definitions() 每项都有非空 description 与合法 parameters（模型可见契约）', async () => {
     const moduleRef = await build()
     const defs = moduleRef.get(AgentToolRegistry).definitions()
-    expect(defs).toHaveLength(4)
+    expect(defs).toHaveLength(7)
     for (const def of defs) {
       expect(def.type).toBe('function')
       expect(def.function.description.length).toBeGreaterThan(10)

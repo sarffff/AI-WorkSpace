@@ -8,9 +8,17 @@ import { startMockBackend, type MockBackend } from './mock-backend'
 //
 // 后端由同源的 mock 替身托管（见 mock-backend.ts），因此这里验证的是「前端契约与交互闭环」，
 // 不含真实模型与数据库；SSE 帧序列按服务端实际写法手工构造，服务端改协议时这里会失败。
+//
+// 定位符取向：能锚在结构/无障碍名上的就不锚文案（品牌标语会改，输入框占位符是功能位）；
+// 锚文案的都在页面/面板内部（见 panel 变量），避免全页撞值假通过。
 
 const PROMPT = '我的 VPN 连不上，证书也重新装过了'
 const DRAFT_TITLE = 'VPN 账号疑似被锁定，需管理员解锁'
+// 登录成功的判据用输入框：它是"进到对话页且渲染完成"的结构证据，不是会改的标语
+const COMPOSER = 'textarea[placeholder="描述你遇到的问题…"]'
+const SEND = 'button[title="发送"]'
+// 引用折叠行的计数文案（展开后才看得到文档名与相关度）
+const SOURCES_TOGGLE = /^1 个知识库来源$/
 
 let backend: MockBackend
 let app: ElectronApplication
@@ -61,12 +69,12 @@ async function boot() {
   await win.locator('input[type="email"]').fill('e2e@servicedeck.test')
   await win.locator('input[type="password"]').fill('e2e-password')
   await win.getByRole('button', { name: '登录工作台' }).click()
-  await expect(win.locator('text=ServiceDeck 智能服务台助手')).toBeVisible()
+  await expect(win.locator(COMPOSER)).toBeVisible()
 }
 
 async function ask() {
-  await win.locator('textarea[placeholder="向智能助手发送指令..."]').fill(PROMPT)
-  await win.locator('button[title="发送"]').click()
+  await win.locator(COMPOSER).fill(PROMPT)
+  await win.locator(SEND).click()
   // Agent 暂停在确认门上：此时还没有正文（正文在用户拍板之后才生成）
   await expect(win.locator('text=确认创建工单 · 优先级 高 · 网络访问')).toBeVisible()
   await expect(win.locator(`text=${DRAFT_TITLE}`).first()).toBeVisible()
@@ -86,11 +94,16 @@ test('确认建单：草稿挂起等待用户拍板，通过后工单落进工�
   // 正文在确认之后才流出来：证明生成器是被确认门唤醒，而不是提前收尾
   await expect(win.locator('text=已为你升级工单')).toBeVisible()
   // 回答消息携带引用溯源与工具轨迹
-  await expect(win.locator('text=内容溯源 · 1 个知识库片段')).toBeVisible()
-  await expect(win.locator('text=执行轨迹')).toBeVisible()
+  const sourcesToggle = win.getByRole('button', { name: SOURCES_TOGGLE })
+  await expect(sourcesToggle).toBeVisible()
+  // 引用是折叠的：展开后必须看得见具体是哪篇、第几节、相关度多少，只剩一个数字不算溯源
+  await sourcesToggle.click()
+  await expect(win.getByText('vpn-troubleshooting.md · VPN 排查')).toBeVisible()
+  await expect(win.getByText(/^相关度 /)).toBeVisible()
+  await expect(win.getByText(/执行了 \d+ 个步骤/)).toBeVisible()
 
   // 工单卡片
-  await expect(win.locator('text=已升级 · 自动创建工单')).toBeVisible()
+  await expect(win.locator('text=已升级为人工工单')).toBeVisible()
 
   // HITL 往返真的发生，且 requestId 归属本会话
   expect(backend.confirmations).toEqual([
@@ -100,11 +113,11 @@ test('确认建单：草稿挂起等待用户拍板，通过后工单落进工�
   expect(backend.tickets).toHaveLength(1)
 
   // 会话卡片直达工单详情：时间线来自 GET /tickets/:id
-  await win.getByRole('button', { name: '查看详情 →' }).click()
+  await win.getByRole('button', { name: '查看详情', exact: true }).click()
   await expect(win.locator('text=工单由 AI 对话升级创建')).toBeVisible()
-  // 点遮罩空白处收起。文案为「关闭」的按钮是关闭工单的状态操作，不是收起 ——
-  // 收起按钮是无障碍名的 X 图标，只能从遮罩下手
-  await win.locator('div.fixed.inset-0').click({ position: { x: 8, y: 8 } })
+  // 收起走有无障碍名的 X 按钮：文案为「关闭」的那个是关闭工单的状态操作，点它会改工单状态。
+  // 遮罩坐标点击在新布局下会被上层元素拦住，也不如按钮可读
+  await win.getByRole('button', { name: '收起工单详情' }).click()
   await expect(win.locator('text=工单由 AI 对话升级创建')).toHaveCount(0)
 
   // 会话卡片跳工单页，新建的工单在列表里
@@ -124,7 +137,7 @@ test('拒绝建单：不产生工单，AI 继续对话', async () => {
 
   await expect(win.locator('text=已拒绝，AI 将继续对话')).toBeVisible()
   await expect(win.locator('text=先不升级工单')).toBeVisible()
-  await expect(win.locator('text=已升级 · 自动创建工单')).toHaveCount(0)
+  await expect(win.locator('text=已升级为人工工单')).toHaveCount(0)
 
   expect(backend.confirmations).toEqual([
     { requestId: expect.stringContaining(':'), approved: false },
@@ -135,17 +148,15 @@ test('拒绝建单：不产生工单，AI 继续对话', async () => {
 test('流式中断走非流式回退：仍给引用来源，并标注不会自动升级工单', async () => {
   await boot()
   // 「触发中断」是替身的约定触发词：让流式端点返回 500，逼出客户端的 catch 回退分支
-  await win
-    .locator('textarea[placeholder="向智能助手发送指令..."]')
-    .fill('帮我看看 VPN 连不上 触发中断')
-  await win.locator('button[title="发送"]').click()
+  await win.locator(COMPOSER).fill('帮我看看 VPN 连不上 触发中断')
+  await win.locator(SEND).click()
 
   // 降级答案与引用来源
   await expect(win.locator('text=（非流式）VPN 连接失败请联系 IT 解锁账号。')).toBeVisible()
-  await expect(win.locator('text=内容溯源 · 1 个知识库片段')).toBeVisible()
+  await expect(win.getByRole('button', { name: SOURCES_TOGGLE })).toBeVisible()
   // 明确标注：这条回答绕过了 Agent 工具循环，不会升级工单
   await expect(win.locator('text=降级回答 · 不会自动升级工单')).toBeVisible()
-  await expect(win.locator('text=已升级 · 自动创建工单')).toHaveCount(0)
+  await expect(win.locator('text=已升级为人工工单')).toHaveCount(0)
 
   expect(backend.requestLog).toContain('POST /chats/chat-e2e-1/completions')
   expect(backend.tickets).toHaveLength(0)
@@ -179,13 +190,33 @@ test('今日 token 预算用尽：展示服务端原因，不走非流式回退'
   backend.setMode('budget-exhausted')
   await boot()
 
-  await win.locator('textarea[placeholder="向智能助手发送指令..."]').fill(PROMPT)
-  await win.locator('button[title="发送"]').click()
+  await win.locator(COMPOSER).fill(PROMPT)
+  await win.locator(SEND).click()
 
   await expect(win.locator('text=今天的模型用量已达预算上限 10000 tokens')).toBeVisible()
   expect(backend.requestLog.filter((r) => r.endsWith('/completions'))).toEqual([])
   await expect(win.locator('text=降级回答 · 不会自动升级工单')).toHaveCount(0)
   await expect(win.locator('text=无法连接到服务器')).toHaveCount(0)
+})
+
+test('坐席的工单服务台：指标卡是占比不是偏转率（同名两个数不能并存）', async () => {
+  // 服务端 stats() 里曾有第二套偏转率口径（分母=活跃会话），与 analytics.deflection
+  // （分母=有过 AI 回答的会话）同名不同径 —— 它已经删了。这张卡必须钉住两件事：
+  // 工单页现在报的是「AI 升级单占比」，而且整页不再出现任何"偏转率"字样
+  backend.setRole('agent')
+  await boot()
+  await win.getByRole('button', { name: /工单服务台/ }).click()
+
+  const panel = win.locator('div.grid.grid-cols-4')
+  await expect(panel).toBeVisible()
+  await expect(panel.getByText('AI 升级单占比', { exact: true })).toBeVisible()
+  // 22/40 张是 AI 升级 → 55%（替身固定这组数，卡片算错就会露在下面的数字断言上）
+  await expect(panel.getByText('55%', { exact: true })).toBeVisible()
+  // 指标卡里不许再出现"偏转率"这个名字（页脚那句指向运营板的说明是允许的，
+  // 禁的是同一页给出第二个同名数字）
+  await expect(panel.getByText(/偏转率/)).toHaveCount(0)
+  await expect(win.getByText(/以会话为分母的偏转率只看运营看板/)).toBeVisible()
+  expect(backend.requestLog).toContain('GET /tickets/stats')
 })
 
 test('运营看板的偏转率面板真的渲染出来（数字、缺口、口径脚注）', async () => {

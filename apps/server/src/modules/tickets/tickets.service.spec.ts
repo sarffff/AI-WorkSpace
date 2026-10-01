@@ -6,7 +6,7 @@ import { TicketsService } from './tickets.service'
 // - stats 仅坐席/管理员可用，取期内（createdAt >= since）工单
 // - 解决时刻优先取时间线含「已解决」的系统事件，旧数据回退 resolved/closed 的 updatedAt
 // - SLA 阈值：urgent 4h / high 8h / normal 24h / low 48h，耗时 <= 阈值算达标
-// - 首次响应取「由 X 受理」事件；偏转率 = 1 - AI 升级工单数 / 活跃会话数（会话为 0 时为 null）
+// - 首次响应取「由 X 受理」事件；工单侧不再计算偏转率（分母是会话，口径唯一住在 analytics）
 // - backlog 来自 status in (open, processing) 的 groupBy 计数
 
 interface TicketFixture {
@@ -141,7 +141,6 @@ describe('TicketsService.stats', () => {
       closed: 1,
     })
     expect(result.backlog).toBe(5)
-    expect(result.deflectRate).toBe(0.9)
   })
 
   it('SLA 达标率按优先级阈值计算（含边界：恰好等于阈值算达标）', async () => {
@@ -204,7 +203,7 @@ describe('TicketsService.stats', () => {
     )
   })
 
-  it('无活跃会话时偏转率为 null；无已解决工单时 SLA 率为 null', async () => {
+  it('无已解决工单时 SLA 各项为 null（而不是 0%）', async () => {
     const openOnly: TicketFixture[] = [
       {
         id: 'x',
@@ -220,7 +219,7 @@ describe('TicketsService.stats', () => {
     const { service } = makeService({ sessions: 0, periodTickets: openOnly })
     const result = await service.stats({ role: 'agent' })
 
-    expect(result.deflectRate).toBeNull()
+    expect(result.sessions).toBe(0)
     expect(result.sla.total).toBe(0)
     expect(result.sla.rate).toBeNull()
     expect(result.sla.avgResolutionHours).toBeNull()

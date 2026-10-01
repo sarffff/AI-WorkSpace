@@ -23,6 +23,8 @@ import {
   Users,
   Sparkles,
   Copy,
+  PenLine,
+  X,
 } from 'lucide-react'
 
 import { api } from '@/shared/api/client'
@@ -70,7 +72,7 @@ const FILE_ICON: Record<string, { icon: React.ReactNode; tint: string }> = {
   md: { icon: <FileCode className="w-4 h-4" />, tint: 'text-brand' },
   markdown: { icon: <FileCode className="w-4 h-4" />, tint: 'text-brand' },
   json: { icon: <FileJson className="w-4 h-4" />, tint: 'text-amber-300' },
-  csv: { icon: <FileSpreadsheet className="w-4 h-4" />, tint: 'text-emerald-300' },
+  csv: { icon: <FileSpreadsheet className="w-4 h-4" />, tint: 'text-brand' },
   zip: { icon: <FileArchive className="w-4 h-4" />, tint: 'text-violet-300' },
   ts: { icon: <FileCode className="w-4 h-4" />, tint: 'text-sky-300' },
   tsx: { icon: <FileCode className="w-4 h-4" />, tint: 'text-sky-300' },
@@ -121,11 +123,36 @@ const GAP_REASON_LABEL: Record<string, { label: string; tint: string }> = {
   unknown_hits: { label: '命中数未知', tint: 'text-t3 border-line bg-s4' },
 }
 
-/** 一条候选的展开态：处理结论 + 可复制的 Markdown 草稿 */
-const GapRow: React.FC<{ c: KnowledgeGapCandidate }> = ({ c }) => {
+/** 一条候选的展开态：处理结论 + 可复制/可晋升的 Markdown 草稿 */
+const GapRow: React.FC<{ c: KnowledgeGapCandidate; onPromoted: () => void }> = ({
+  c,
+  onPromoted,
+}) => {
   const [open, setOpen] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [promoting, setPromoting] = useState(false)
+  const [promoted, setPromoted] = useState(false)
+  const user = useSelector((s: RootState) => s.auth.user)
   const reason = GAP_REASON_LABEL[c.reason] ?? GAP_REASON_LABEL.unknown_hits
+
+  // 一键晋升：草稿直接走文本建文档入库（共享至本部门），飞轮闭环的最后一环
+  const promote = async () => {
+    if (promoting) return
+    setPromoting(true)
+    try {
+      await api.createTextDocument({
+        name: `${c.question.slice(0, 60) || c.ticketId}.md`,
+        content: c.markdown,
+        department: user?.department || undefined,
+      })
+      setPromoted(true)
+      onPromoted()
+    } catch {
+      // 失败保持可重试
+    } finally {
+      setPromoting(false)
+    }
+  }
 
   const copy = async () => {
     try {
@@ -179,6 +206,20 @@ const GapRow: React.FC<{ c: KnowledgeGapCandidate }> = ({ c }) => {
                 <Copy className="w-3 h-3" />
                 {copied ? '已复制' : '复制 Markdown'}
               </button>
+              <button
+                type="button"
+                onClick={promote}
+                disabled={promoting || promoted}
+                className="flex items-center gap-1 text-[10px] font-mono text-t3 hover:text-brand transition-colors disabled:opacity-60"
+                title="将草稿作为 Markdown 文档入库并索引（共享至本部门）"
+              >
+                {promoting ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <CloudUpload className="w-3 h-3" />
+                )}
+                {promoted ? '已晋升入库' : '晋升到知识库'}
+              </button>
             </div>
             <pre className="p-3 rounded-lg bg-s0 border border-line text-[10px] font-mono text-t3 leading-relaxed whitespace-pre-wrap max-h-56 overflow-y-auto">
               {c.markdown}
@@ -190,7 +231,10 @@ const GapRow: React.FC<{ c: KnowledgeGapCandidate }> = ({ c }) => {
   )
 }
 
-const GapPanel: React.FC<{ data: KnowledgeGapsResult }> = ({ data }) => {
+const GapPanel: React.FC<{ data: KnowledgeGapsResult; onPromoted: () => void }> = ({
+  data,
+  onPromoted,
+}) => {
   const { summary } = data
   return (
     <div className="rise-in rounded-xl panel overflow-hidden">
@@ -223,7 +267,7 @@ const GapPanel: React.FC<{ data: KnowledgeGapsResult }> = ({ data }) => {
 
       <div>
         {data.candidates.map((c) => (
-          <GapRow key={c.ticketId} c={c} />
+          <GapRow key={c.ticketId} c={c} onPromoted={onPromoted} />
         ))}
       </div>
 
@@ -246,6 +290,11 @@ export const KnowledgePage: React.FC = () => {
   const [dragOver, setDragOver] = useState(false)
   const [uploadError, setUploadError] = useState('')
   const [shareToDept, setShareToDept] = useState(false)
+  // 文本建文档弹窗（缺口晋升之外的手动补文入口）
+  const [textOpen, setTextOpen] = useState(false)
+  const [textName, setTextName] = useState('')
+  const [textContent, setTextContent] = useState('')
+  const [textBusy, setTextBusy] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const refresh = () => {
@@ -335,6 +384,31 @@ export const KnowledgePage: React.FC = () => {
     }
   }
 
+  // 文本建文档：与上传同一条索引流水线，立即返回 processing 条目入列表
+  const handleCreateText = async () => {
+    if (!textName.trim() || textContent.trim().length < 20) {
+      setUploadError('文本文档需填写名称，且正文至少 20 字')
+      return
+    }
+    setTextBusy(true)
+    setUploadError('')
+    try {
+      const doc = await api.createTextDocument({
+        name: textName.trim(),
+        content: textContent,
+        department: shareToDept ? user?.department || undefined : undefined,
+      })
+      setDocuments((prev) => [doc, ...prev.filter((d) => d.id !== doc.id)])
+      setTextOpen(false)
+      setTextName('')
+      setTextContent('')
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : '创建失败')
+    } finally {
+      setTextBusy(false)
+    }
+  }
+
   const totalChunks = useMemo(() => documents.reduce((sum, d) => sum + d.chunks, 0), [documents])
   const totalSize = useMemo(() => documents.reduce((sum, d) => sum + d.size, 0), [documents])
   const filtered = useMemo(
@@ -389,9 +463,16 @@ export const KnowledgePage: React.FC = () => {
               </label>
             )}
             <button
+              onClick={() => setTextOpen(true)}
+              className="px-4 py-2.5 bg-s3 hover:bg-s3 text-t2 hover:text-t1 text-xs font-semibold rounded-lg flex items-center gap-2 transition-all shrink-0 border border-line"
+            >
+              <PenLine className="w-4 h-4" />
+              新建文本
+            </button>
+            <button
               onClick={() => fileInputRef.current?.click()}
               disabled={uploading}
-              className="px-4 py-2.5 bg-brand/10 hover:bg-emerald-500/20 disabled:opacity-50 border border-brand/30 hover:border-brand/50 text-brand text-xs font-semibold rounded-lg flex items-center gap-2 transition-all shrink-0"
+              className="px-4 py-2.5 bg-brand-strong hover:brightness-110 disabled:opacity-50 text-brand-on text-xs font-semibold rounded-lg flex items-center gap-2 transition-all shrink-0"
             >
               {uploading ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
@@ -436,14 +517,12 @@ export const KnowledgePage: React.FC = () => {
         </div>
 
         {/* 知识缺口：AI 升级掉、人工解决了的问题 —— 补一篇就少一类升级 */}
-        {gaps && gaps.summary.total > 0 && <GapPanel data={gaps} />}
+        {gaps && gaps.summary.total > 0 && <GapPanel data={gaps} onPromoted={refresh} />}
 
         {/* 文档列表（支持拖拽上传） */}
         <div
           className={`rise-in rounded-xl panel overflow-hidden transition-all ${
-            dragOver
-              ? 'border-brand/60 shadow-[0_0_0_1px_var(--brand-ring),0_8px_30px_-12px_var(--brand-glow)]'
-              : ''
+            dragOver ? 'border-dashed !border-brand' : ''
           }`}
           style={{ animationDelay: '290ms' }}
           onDragOver={(e) => {
@@ -459,7 +538,7 @@ export const KnowledgePage: React.FC = () => {
           }}
         >
           <div className="p-4 border-b border-line flex items-center justify-between gap-4">
-            <div className="flex items-center gap-2 bg-s4 px-3 py-2 rounded-lg border border-line focus-within:border-emerald-500/50 transition-colors w-80">
+            <div className="flex items-center gap-2 bg-s4 px-3 py-2 rounded-lg border border-line focus-within:border-linestrong transition-colors w-80">
               <Search className="w-3.5 h-3.5 text-t3" />
               <input
                 type="text"
@@ -518,7 +597,7 @@ export const KnowledgePage: React.FC = () => {
                               </div>
                               <div className="h-1 rounded-full bg-s4 overflow-hidden">
                                 <div
-                                  className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-teal-400 transition-all duration-500"
+                                  className="h-full rounded-full bg-brand transition-all duration-500"
                                   style={{ width: `${doc.progress.percent}%` }}
                                 />
                               </div>
@@ -575,6 +654,71 @@ export const KnowledgePage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* 文本建文档弹窗 */}
+      {textOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-6"
+          onClick={() => setTextOpen(false)}
+        >
+          <div
+            className="w-full max-w-2xl rounded-2xl panel border border-line shadow-2xl rise-in overflow-hidden flex flex-col max-h-[80vh]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-4 border-b border-line flex items-center justify-between">
+              <div>
+                <h4 className="font-display text-sm font-semibold text-t1">新建文本文档</h4>
+                <p className="text-[11px] text-t3 mt-0.5">
+                  直接粘贴 SOP / 故障处理步骤，入库后自动切块向量化，Agent 下次即可检索到
+                </p>
+              </div>
+              <button
+                onClick={() => setTextOpen(false)}
+                className="p-1.5 rounded-lg text-t4 hover:text-t1 hover:bg-s3 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-3 overflow-y-auto">
+              <input
+                value={textName}
+                onChange={(e) => setTextName(e.target.value)}
+                placeholder="文档名，如：VPN 连接失败排查 SOP"
+                className="w-full bg-s4 border border-line focus:border-linestrong rounded-lg px-3 py-2.5 text-xs text-t1 outline-none transition-colors placeholder:text-t4"
+              />
+              <textarea
+                value={textContent}
+                onChange={(e) => setTextContent(e.target.value)}
+                placeholder={'Markdown 正文（至少 20 字）…\n\n## 现象\n…\n\n## 处理步骤\n1. …'}
+                rows={12}
+                className="w-full bg-s4 border border-line focus:border-linestrong rounded-lg px-3 py-2.5 text-xs text-t2 outline-none transition-colors placeholder:text-t4 resize-y leading-relaxed font-mono"
+              />
+            </div>
+            <div className="px-5 py-3.5 border-t border-line flex items-center justify-between gap-3">
+              <span className="text-[10px] text-t4">
+                {textContent.trim().length} 字
+                {shareToDept && user?.department ? ` · 共享至 ${user.department}` : ' · 仅自己可见'}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setTextOpen(false)}
+                  className="px-3.5 py-2 rounded-lg text-xs text-t3 hover:text-t1 border border-line transition-colors"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={handleCreateText}
+                  disabled={textBusy}
+                  className="px-4 py-2 rounded-lg bg-brand-strong hover:brightness-110 text-brand-on text-xs font-semibold transition-all disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  {textBusy && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  入库并索引
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

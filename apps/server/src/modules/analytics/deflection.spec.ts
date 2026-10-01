@@ -5,9 +5,12 @@ import { computeDeflection, rankKnowledgeGaps, type SessionFact } from './deflec
 // - 单位是会话：一个会话建了两张单也只算一次升级
 // - 无数据时 rate 是 null，不是 0（0% 会被读成"一个都没挡住"）
 // - 没归属会话的 AI 工单不进分子，但报数并给出 coverage
+// - 偏转成功但整会话零引用 = 无依据偏转（水分上限）；升级过的会话不参与该判定
 
 const s = (over: Partial<SessionFact> & { chatId: string }): SessionFact => ({
   answers: 1,
+  // 缺省当作"这条回答是查过资料的"：新指标要的是零引用的那批，别让老用例误报
+  citedAnswers: 1,
   agentTickets: 0,
   downs: 0,
   questions: 1,
@@ -79,6 +82,51 @@ describe('computeDeflection', () => {
     expect(r.deflectedSessions).toBe(3)
     expect(r.lowConfidenceDeflections).toBe(2)
     expect(r.lowConfidenceShare).toBeCloseTo(2 / 3, 4)
+  })
+
+  it('偏转成功但整会话零引用 → 记为无依据偏转，并给出占偏转成功的比例', () => {
+    const r = computeDeflection({
+      sessions: [
+        s({ chatId: 'c1' }), // 查过资料，用户也没再找人 → 真接住
+        s({ chatId: 'c2', citedAnswers: 0 }),
+        s({ chatId: 'c3', citedAnswers: 0 }),
+        s({ chatId: 'c4', citedAnswers: 0, answers: 3 }), // 多条回答全无引用，仍只算一个会话
+      ],
+      unattributedAgentTickets: 0,
+    })
+    expect(r.deflectedSessions).toBe(4)
+    expect(r.ungroundedDeflections).toBe(3)
+    expect(r.ungroundedShare).toBeCloseTo(0.75, 4)
+  })
+
+  it('升级走的会话不参与无依据判定（它本来就没被算成接住）', () => {
+    const r = computeDeflection({
+      sessions: [s({ chatId: 'c1', citedAnswers: 0, agentTickets: 1 })],
+      unattributedAgentTickets: 0,
+    })
+    expect(r.deflectedSessions).toBe(0)
+    expect(r.ungroundedDeflections).toBe(0)
+    expect(r.ungroundedShare).toBeNull()
+  })
+
+  it('部分回答有引用就不算无依据：判据是"整段会话都没查资料"', () => {
+    const r = computeDeflection({
+      sessions: [s({ chatId: 'c1', answers: 4, citedAnswers: 1 })],
+      unattributedAgentTickets: 0,
+    })
+    expect(r.ungroundedDeflections).toBe(0)
+  })
+
+  it('同一会话的聚合行被合并时，引用数与回答数一起累加', () => {
+    const r = computeDeflection({
+      sessions: [
+        s({ chatId: 'c1', answers: 2, citedAnswers: 0 }),
+        s({ chatId: 'c1', answers: 1, citedAnswers: 1 }),
+      ],
+      unattributedAgentTickets: 0,
+    })
+    expect(r.answeredSessions).toBe(1)
+    expect(r.ungroundedDeflections).toBe(0)
   })
 
   it('无归属的 AI 工单不进分子，但计入 coverage 的分母', () => {

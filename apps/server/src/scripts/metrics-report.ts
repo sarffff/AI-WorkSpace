@@ -159,6 +159,12 @@ async function main(): Promise<void> {
         `${def.lowConfidenceDeflections} (${pct(def.lowConfidenceShare)})`,
       ),
     )
+    console.log(
+      line(
+        '无依据偏转（整会话零引用）',
+        `${def.ungroundedDeflections} (${pct(def.ungroundedShare)})`,
+      ),
+    )
     console.log(line('只有提问没有回答（不进比率）', def.unansweredSessions))
     console.log(line('归属可查率', pct(def.attributionCoverage)))
     console.log(line('追不到会话的 AI 工单', def.unattributedAgentTickets))
@@ -167,6 +173,13 @@ async function main(): Promise<void> {
     if (def.attributionCoverage === null) {
       console.log('  ⚠ 上面这个百分比是空心的：期内没有任何 AI 升级工单，分母里没有一次"没接住"。')
       console.log('    它只说明「AI 答过话、且没人被迫转人工」，不能读成偏转成功。')
+    }
+    if (def.ungroundedDeflections > 0) {
+      console.log(
+        `  ⚠ 其中 ${def.ungroundedDeflections} 个"接住"的会话通篇没有一条引用：最多有 ${pct(
+          def.ungroundedShare,
+        )} 的偏转是没查资料就答的（含纯闲聊，所以这是上限不是定论）。`,
+      )
     }
     if (def.knowledgeGaps.length) {
       console.log(

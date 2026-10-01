@@ -336,3 +336,117 @@ describe('TicketsService.dispatchBacktest 装配', () => {
     expect(res.decisions.find((d) => d.ticketId === 'o1')?.basis).toBe('unroutable_category')
   })
 })
+
+// applyDispatch：预演之外唯一会写 assigneeId 的口子。守的是「够硬才写、不覆盖、可逆」。
+describe('TicketsService.applyDispatch 落库', () => {
+  const staffUser = { id: 'admin1', role: 'agent' }
+
+  const targetTicket = (over: Partial<Record<string, unknown>> = {}) => ({
+    id: 't1',
+    title: '网络问题',
+    category: 'network',
+    priority: 'normal',
+    status: 'open',
+    assigneeId: null,
+    createdAt: D(-1),
+    creatorId: 'u9',
+    creator: { department: null },
+    ...over,
+  })
+
+  function makeApply(fx: {
+    users?: UserRow[]
+    history?: TicketRow[]
+    ticket: Record<string, unknown>
+  }) {
+    const events: string[] = []
+    const updates: Record<string, unknown>[] = []
+    const prisma = {
+      user: {
+        findMany: async () => fx.users ?? AGENTS,
+        findUnique: async () => ({ name: '张三', email: 'z@corp.com' }),
+      },
+      ticket: {
+        // applyDispatch 的 select 与 update() 内 getVisibleTicket 的全量取都走这里
+        findUnique: async () => fx.ticket,
+        findMany: async () => fx.history ?? [],
+        update: async (a: { data: Record<string, unknown> }) => {
+          updates.push(a.data)
+          return { id: 't1', creator: {}, assignee: {}, ...a.data }
+        },
+      },
+      ticketComment: {
+        create: async (a: { data: { content: string } }) => {
+          events.push(a.data.content)
+          return a.data
+        },
+        findMany: async () => [],
+      },
+    }
+    return { service: new TicketsService(prisma as unknown as PrismaService), events, updates }
+  }
+
+  it('员工不可派单', async () => {
+    const { service } = makeApply({ ticket: targetTicket() })
+    await expect(service.applyDispatch({ id: 'e', role: 'employee' }, 't1')).rejects.toThrow(
+      ForbiddenException,
+    )
+  })
+
+  it('证据够硬：写进 assigneeId，走人工派单同一路径（时间线 + open→processing）', async () => {
+    const { service, updates, events } = makeApply({
+      users: AGENTS,
+      history: history('a1', 2), // a1 在 network 完结 2 单 >= 默认 minEvidence 2
+      ticket: targetTicket(),
+    })
+    const res = await service.applyDispatch(staffUser, 't1')
+    expect(res).toMatchObject({ applied: true, assigneeId: 'a1' })
+    // 指派 + 自动进入处理中，与人工在工单页派单完全一致（因此可逆）
+    expect(updates).toEqual([{ assigneeId: 'a1', status: 'processing' }])
+    expect(events.some((e) => e.includes('由 张三 受理'))).toBe(true)
+  })
+
+  it('无信号：不写库，如实报 no_signal', async () => {
+    const { service, updates } = makeApply({ users: AGENTS, history: [], ticket: targetTicket() })
+    const res = await service.applyDispatch(staffUser, 't1')
+    expect(res).toMatchObject({ applied: false, reason: 'no_signal' })
+    expect(updates).toEqual([])
+  })
+
+  it('证据不足门槛：不写库，报 thin_evidence；调高 minEvidence 旋钮才放行', async () => {
+    const oneDone = () =>
+      makeApply({ users: AGENTS, history: history('a1', 1), ticket: targetTicket() })
+    const thin = await oneDone().service.applyDispatch(staffUser, 't1')
+    expect(thin).toMatchObject({ applied: false, reason: 'thin_evidence' })
+
+    const { service, updates } = oneDone()
+    const loosened = await service.applyDispatch(staffUser, 't1', { minEvidence: 1 })
+    expect(loosened).toMatchObject({ applied: true, assigneeId: 'a1' })
+    expect(updates).toEqual([{ assigneeId: 'a1', status: 'processing' }])
+  })
+
+  it('other 分类：判不了路由，报 unroutable_category，不写库', async () => {
+    const { service, updates } = makeApply({
+      users: AGENTS,
+      history: history('a1', 3),
+      ticket: targetTicket({ category: 'other' }),
+    })
+    const res = await service.applyDispatch(staffUser, 't1')
+    expect(res).toMatchObject({ applied: false, reason: 'unroutable_category' })
+    expect(updates).toEqual([])
+  })
+
+  it('已派过人：不覆盖坐席的判断', async () => {
+    const { service, updates } = makeApply({ ticket: targetTicket({ assigneeId: 'a2' }) })
+    const res = await service.applyDispatch(staffUser, 't1')
+    expect(res).toMatchObject({ applied: false, reason: 'already_assigned', assigneeId: 'a2' })
+    expect(updates).toEqual([])
+  })
+
+  it('已完结的单：不派', async () => {
+    const { service, updates } = makeApply({ ticket: targetTicket({ status: 'resolved' }) })
+    const res = await service.applyDispatch(staffUser, 't1')
+    expect(res).toMatchObject({ applied: false, reason: 'not_actionable', status: 'resolved' })
+    expect(updates).toEqual([])
+  })
+})

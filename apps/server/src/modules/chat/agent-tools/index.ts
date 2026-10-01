@@ -1,12 +1,16 @@
 import type { Provider } from '@nestjs/common'
 import { AgentToolRegistry } from './registry.service'
 import { CreateTicketTool } from './create-ticket.tool'
+import { AddTicketCommentTool, CloseMyTicketTool } from './ticket-write-tools'
 import { GetTicketTool, LookupMyTicketsTool, SearchKnowledgeTool } from './read-tools'
+import { ReadAttachmentTool } from './read-attachment.tool'
 import { AGENT_TOOLS, type AgentTool } from './types'
 
 export { AgentToolRegistry } from './registry.service'
 export { CreateTicketTool } from './create-ticket.tool'
+export { AddTicketCommentTool, CloseMyTicketTool } from './ticket-write-tools'
 export { GetTicketTool, LookupMyTicketsTool, SearchKnowledgeTool } from './read-tools'
+export { ReadAttachmentTool } from './read-attachment.tool'
 export { AGENT_TOOLS } from './types'
 export type {
   AgentTool,
@@ -26,7 +30,10 @@ const TOOL_CLASSES = [
   SearchKnowledgeTool,
   LookupMyTicketsTool,
   GetTicketTool,
+  ReadAttachmentTool,
   CreateTicketTool,
+  AddTicketCommentTool,
+  CloseMyTicketTool,
 ] as const
 
 // DI 装配：各工具类 + 多提供者聚合 + 注册表

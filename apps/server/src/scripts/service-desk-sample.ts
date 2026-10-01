@@ -5,7 +5,8 @@
  *   pnpm sample:run                       # 缺省 = audit，纯读，不打任何外部服务
  *   SAMPLE_STAGE=docs pnpm sample:run     # 上传 samples/docs/*.md（会调 embedding）
  *   SAMPLE_STAGE=reclassify pnpm sample:run   # 按清单纠正分类（走 service，留时间线）
- *   SAMPLE_YES=1 SAMPLE_STAGE=escalate pnpm sample:run  # 真实 LLM 跑 Agent，会产生工单
+ *   SAMPLE_YES=1 SAMPLE_STAGE=sla pnpm sample:run         # 跑一次 SLA 扫描（推通知、改 slaNotifyStage）
+ *   SAMPLE_YES=1 SAMPLE_STAGE=escalate pnpm sample:run    # 真实 LLM 跑 Agent，会产生工单
  *
  * 为什么要 escalate 这道显式开关：它是唯一花钱、也唯一往业务表写东西的阶段，
  * 一次跑几个问题就是几毛钱加几张真单，不该被"顺手跑个脚本"触发。
@@ -189,6 +190,28 @@ async function audit(prisma: PrismaService): Promise<void> {
       `  ${r.createdAt.toISOString().slice(0, 16)} 决策轮=${r.rounds} 工具=${r.toolCalls} 检索命中=${r.sources} 工单=${r.ticketId ? r.ticketId.slice(0, 8) : '-'}`,
     )
   }
+
+  const notifs = await prisma.notification.findMany({
+    orderBy: { createdAt: 'desc' },
+    take: 10,
+    select: { userId: true, type: true, title: true, read: true, createdAt: true },
+  })
+  console.log(hr(`站内通知（最近 ${notifs.length} 条）`))
+  for (const n of notifs) {
+    console.log(
+      `  ${n.createdAt.toISOString().slice(0, 16)} [${n.type}] ${n.title} → ${nameOf(n.userId)}（${n.read ? '已读' : '未读'}）`,
+    )
+  }
+  const slaRows = await prisma.ticket.findMany({
+    where: { status: { in: ['open', 'processing'] } },
+    select: { id: true, title: true, priority: true, dueAt: true, slaNotifyStage: true },
+  })
+  console.log(hr(`未完结工单的 SLA 状态（${slaRows.length} 张）`))
+  for (const t of slaRows) {
+    console.log(
+      `  ${t.title.slice(0, 20)}｜${t.priority}｜dueAt=${t.dueAt ? t.dueAt.toISOString().slice(0, 16) : '未排期'}｜阶段=${t.slaNotifyStage ?? '未通知'}`,
+    )
+  }
 }
 
 async function uploadDocs(
@@ -356,6 +379,16 @@ async function main(): Promise<void> {
     }
     if (stage === 'docs') return await uploadDocs(prisma, app.get(KnowledgeService), manifest)
     if (stage === 'reclassify') return await reclassify(prisma, app.get(TicketsService), manifest)
+    if (stage === 'sla') {
+      // 扫描会推通知并推进工单的 slaNotifyStage，与 escalate 同级：要显式确认
+      if (process.env.SAMPLE_YES !== '1') {
+        console.log('sla 阶段会写通知与 slaNotifyStage，需要 SAMPLE_YES=1')
+        return
+      }
+      const res = await app.get(TicketsService).scanSlaStages()
+      console.log(hr(`SLA 扫描结果：atRisk=${res.atRisk} breached=${res.breached}`))
+      return await audit(prisma)
+    }
     if (stage === 'escalate') {
       if (process.env.SAMPLE_YES !== '1') {
         console.log(

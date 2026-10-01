@@ -143,7 +143,7 @@ export const TicketDetailModal: React.FC<{
       onClick={onClose}
     >
       <div
-        className="w-full max-w-2xl max-h-[85vh] rounded-2xl panel border border-line shadow-2xl shadow-black/50 rise-in overflow-hidden flex flex-col"
+        className="w-full max-w-2xl max-h-[85vh] rounded-2xl panel border border-line shadow-2xl rise-in overflow-hidden flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {!detail ? (
@@ -215,7 +215,7 @@ export const TicketDetailModal: React.FC<{
                   {isStaff && detail.status === 'open' && (
                     <button
                       onClick={() => update({ assigneeId: user?.id })}
-                      className="px-2.5 py-1.5 rounded-lg bg-brand/10 hover:bg-emerald-500/20 text-brand text-[10px] font-mono border border-brand/20 hover:border-brand/40 transition-colors"
+                      className="px-2.5 py-1.5 rounded-lg bg-brand/10 hover:bg-brand/20 text-brand text-[10px] border border-brand/25 hover:border-brand/40 transition-colors"
                     >
                       受理
                     </button>
@@ -223,7 +223,7 @@ export const TicketDetailModal: React.FC<{
                   {isStaff && detail.status === 'processing' && (
                     <button
                       onClick={() => update({ status: 'resolved' })}
-                      className="px-2.5 py-1.5 rounded-lg bg-brand/10 hover:bg-emerald-500/20 text-brand text-[10px] font-mono border border-brand/20 hover:border-brand/40 transition-colors"
+                      className="px-2.5 py-1.5 rounded-lg bg-brand/10 hover:bg-brand/20 text-brand text-[10px] border border-brand/25 hover:border-brand/40 transition-colors"
                     >
                       标记解决
                     </button>
@@ -238,6 +238,7 @@ export const TicketDetailModal: React.FC<{
                   )}
                   <button
                     onClick={onClose}
+                    aria-label="收起工单详情"
                     className="p-1.5 rounded-lg text-t3 hover:text-t1 hover:bg-s3 transition-colors"
                   >
                     <X className="w-4 h-4" />
@@ -324,7 +325,7 @@ export const TicketDetailModal: React.FC<{
               <button
                 onClick={submitComment}
                 disabled={busy || !draft.trim()}
-                className="p-2.5 rounded-lg bg-brand-strong hover:brightness-110 disabled:opacity-40 text-brand-on transition-all shadow-md shadow-emerald-500/20"
+                className="p-2.5 rounded-lg bg-brand-strong hover:brightness-110 disabled:opacity-40 text-brand-on transition-all"
               >
                 {busy ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />

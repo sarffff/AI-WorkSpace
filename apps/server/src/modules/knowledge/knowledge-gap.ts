@@ -189,3 +189,137 @@ export function summarizeGaps(candidates: GapCandidate[]): GapSummary {
     recurring,
   }
 }
+
+// ===== 缺口台账：清单可以重算，处置必须留下 =====
+//
+// 上面那份候选清单是纯推导 —— 每次请求都能从工单里再算出来。它有一个没法回避的缺陷：
+// 补完文档之后缺口不会消失，因为触发它的那张工单还在。于是"待补清单"越攒越长，
+// 没人知道哪些其实已经成文、哪些被判断过"不值得成文"。
+//
+// 落库的不是清单，是**人对清单的动作**，所以同步规则只有一条：
+// 见过的 ticketId 一律不碰（已有行永远不覆盖、不删除）—— 坐席的处置不能被一次重算冲掉。
+
+export type GapStatus = 'open' | 'covered' | 'dismissed'
+
+/** 台账行（与 KnowledgeGap 表同构；question 已按列宽截断） */
+export interface GapRecord {
+  ticketId: string
+  chatId: string | null
+  category: string
+  question: string
+  reason: GapReason
+  hasSolution: boolean
+  status: GapStatus
+  closedAt: Date | null
+  closedDocId: string | null
+  firstSeenAt: Date
+}
+
+export type NewGapRow = Pick<
+  GapRecord,
+  'ticketId' | 'chatId' | 'category' | 'question' | 'reason' | 'hasSolution'
+>
+
+/** 列宽：与 schema 的 question VarChar(500) 对齐，超长截断而不是让整批写入失败 */
+const QUESTION_MAX_CHARS = 500
+
+/**
+ * 同步计划：给没见过的 ticketId 建行，已有的一律不动。
+ * 也不因为"这次重算没算出它"就删行 —— 工单被删或状态回退都不该让处置记录消失。
+ */
+export function planGapSync(
+  candidates: GapCandidate[],
+  existing: Array<{ ticketId: string }>,
+): NewGapRow[] {
+  const known = new Set(existing.map((r) => r.ticketId))
+  const out: NewGapRow[] = []
+  for (const c of candidates) {
+    if (known.has(c.ticketId)) continue
+    known.add(c.ticketId) // 同一批里也不会出现两次同 ticketId，这里是防御
+    out.push({
+      ticketId: c.ticketId,
+      chatId: c.chatId,
+      category: c.category,
+      question: c.question.trim().slice(0, QUESTION_MAX_CHARS),
+      reason: c.reason,
+      hasSolution: c.hasSolution,
+    })
+  }
+  return out
+}
+
+/**
+ * 归一化求助文案：只认**完全相同**的一句话。
+ * 不做相似度/关键词匹配 —— 猜出来的"复发了"会让人对着一个不相干的单子去改文档。
+ */
+const sameAsk = (a: string, b: string) =>
+  a.trim().toLowerCase().replace(/\s+/g, ' ') === b.trim().toLowerCase().replace(/\s+/g, ' ')
+
+export interface GapReopen {
+  /** 当初判为已成文的那条 */
+  closedTicketId: string
+  closedDocId: string | null
+  closedAt: Date
+  /** 之后又出现并再次被人工解决的同一句求助 */
+  recurredTicketId: string
+  recurredAt: Date
+  question: string
+  category: string
+}
+
+export interface GapBoard {
+  total: number
+  open: number
+  covered: number
+  dismissed: number
+  /** 最早一条未补缺口挂了多少天（向下取整）；没有未补项时 null */
+  oldestOpenDays: number | null
+  /** 有成文日期、却缺 closedDocId 的条数：处置没留出处，回溯不了"补的是什么" */
+  coveredWithoutDoc: number
+  /** 成文之后同一句求助又出现 —— 那篇文档没解决它 */
+  reopened: GapReopen[]
+}
+
+export function summarizeGapBoard(rows: GapRecord[], now = new Date()): GapBoard {
+  const open = rows.filter((r) => r.status === 'open')
+  const covered = rows.filter((r) => r.status === 'covered')
+
+  const dayMs = 86_400_000
+  const oldest = open.reduce<Date | null>(
+    (min, r) => (!min || r.firstSeenAt < min ? r.firstSeenAt : min),
+    null,
+  )
+
+  // 复发判定只在"关闭之后新出现的同问句未补行"之间做：
+  // 关闭之前就有同句求助的，是同一次故障的两张单，不是文档失效的证据
+  const reopened: GapReopen[] = []
+  for (const c of covered) {
+    if (!c.closedAt) continue
+    for (const r of open) {
+      if (r.firstSeenAt <= c.closedAt) continue
+      if (r.category !== c.category || !sameAsk(r.question, c.question)) continue
+      reopened.push({
+        closedTicketId: c.ticketId,
+        closedDocId: c.closedDocId,
+        closedAt: c.closedAt,
+        recurredTicketId: r.ticketId,
+        recurredAt: r.firstSeenAt,
+        question: r.question,
+        category: r.category,
+      })
+    }
+  }
+  reopened.sort((a, b) => b.recurredAt.getTime() - a.recurredAt.getTime())
+
+  return {
+    total: rows.length,
+    open: open.length,
+    covered: covered.length,
+    dismissed: rows.length - open.length - covered.length,
+    oldestOpenDays: oldest
+      ? Math.max(0, Math.floor((now.getTime() - oldest.getTime()) / dayMs))
+      : null,
+    coveredWithoutDoc: covered.filter((c) => !c.closedDocId).length,
+    reopened,
+  }
+}
